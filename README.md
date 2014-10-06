@@ -35,3 +35,6 @@ To load the database:
 To perform an extract:
 
 `cosm <database_directory> <min_lat> <min_lon> <max_lat> <max_lon>`
+
+
+The extract will be saved to the database directory under the name `out.pbf`. This will of course be changed to stdout or a user-specified filename soon.
