@@ -20,6 +20,11 @@ Clang is a nice compiler with nice error messages. You may want to install it an
 
 `sudo apt-get install clang`
 
+Then just make as usual:
+
+`make clean && make`
+
+
 
 ## usage
 
