@@ -1,5 +1,4 @@
-# CC=gcc
-CC=clang
+CC=gcc #CC=clang
 CFLAGS=-g -Wall -std=gnu99 -O3
 LIBS=-lprotobuf-c -lz
 SOURCES=$(wildcard *.c)
