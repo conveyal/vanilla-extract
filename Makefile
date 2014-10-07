@@ -1,9 +1,10 @@
-CC=gcc
-CFLAGS=-g -Wall -std=gnu99 -o3
+# CC=gcc
+CC=clang
+CFLAGS=-g -Wall -std=gnu99 -O3
 LIBS=-lprotobuf-c -lz
 SOURCES=$(wildcard *.c)
 OBJECTS=$(SOURCES:.c=.o)
-EXECUTABLE=cosm #pbf
+EXECUTABLE=vex
 
 all: $(SOURCES) $(EXECUTABLE)
 	

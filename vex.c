@@ -1,3 +1,5 @@
+/* vex.c : vanilla-extract main */
+
 #include <sys/mman.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -44,7 +46,7 @@
 #define RELATION 2
 
 /* The location where we will save all files. This can be set using a command line parameter. */
-static const char *database_path = "/mnt/ssd2/cosm_db/";
+static char *database_path;
 
 /* Compact geographic position. Latitude and longitude mapped to the signed 32-bit int range. */
 typedef struct {
@@ -441,8 +443,8 @@ static void fillFactor () {
 
 /* Print out a message explaining command line parameters to the user, then exit. */
 static void usage () {
-    printf("usage:\ncosm database_dir input.osm.pbf\n");
-    printf("cosm database_dir min_lat min_lon max_lat max_lon\n");
+    printf("usage:\nvex database_dir input.osm.pbf\n");
+    printf("vex database_dir min_lat min_lon max_lat max_lon\n");
     exit(EXIT_SUCCESS);
 }
 
