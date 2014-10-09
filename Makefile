@@ -1,7 +1,6 @@
-CC=gcc #CC=clang
-CFLAGS=-g -Wall -std=gnu99 -O3
-# -lrt is for shared memory
-LIBS=-lprotobuf-c -lz -lrt 
+CC=gcc # CC=clang
+CFLAGS=-Wall -std=gnu99 -O3 -g # -pg for gprof
+LIBS=-lprotobuf-c -lz -lrt # rt is for shared memory
 SOURCES=$(wildcard *.c)
 OBJECTS=$(SOURCES:.c=.o)
 EXECUTABLE=vex

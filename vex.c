@@ -189,8 +189,8 @@ void *map_file(const char *name, uint32_t subfile, size_t size) {
     make_db_path (name, subfile);
     int fd;
     if (in_memory) {
-        fd = shm_open(name, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
         printf("Opening shared memory object '%s' of size %sB.\n", path_buf, human(size));
+        fd = shm_open(path_buf, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
     } else {
         printf("Mapping file '%s' of size %sB.\n", path_buf, human(size));
         // including O_TRUNC causes much slower write (swaps pages in?)
