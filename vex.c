@@ -186,7 +186,7 @@ void *map_file(const char *name, uint32_t subfile, size_t size) {
     int fd;
     if (in_memory) {
         fd = shm_open(name, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
-        printf("Opening shared memory object '%s' of size %sB.\n", path_buf, human(size));
+        printf("Opening shared memory object '%s' of size %sB.\n", name, human(size));
     } else {
         make_db_path (name, subfile);
         printf("Mapping file '%s' of size %sB.\n", path_buf, human(size));
