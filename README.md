@@ -30,7 +30,7 @@ To load a PBF file into the database:
 
 `./vex <database_directory> <planet.pbf>`
 
-Loading a full planet PBF to a solid-state drive will take at least an hour, so you may want to start with a small PBF file just to experiment with making extracts. You will want to delete the contents of the database directory before you start another import.
+Loading a full planet PBF to a solid-state drive will take at least an hour, so you may want to start with a small PBF file just to experiment with making extracts. You will want to delete the contents of the database directory before you start another import. If your machine has enough memory available, you can bypass disk entirely and perform the entire operation entirely in memory by replacing specifying 'memory' (without quotes) as the database directory parameter.
 
 Once your PBF data is loaded, to perform an extract run:
 
