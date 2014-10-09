@@ -1,9 +1,10 @@
 /* vex.c : vanilla-extract main */
 
 #include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdint.h>
-#include <fcntl.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <stdbool.h>
@@ -37,8 +38,11 @@
 /* Assume one-fifth as many blocks as cells in the grid. Observed number is ~15000000 blocks. */
 #define MAX_WAY_BLOCKS (GRID_DIM * GRID_DIM / 5)
 
-/*
-  Define the sequence in which elements are read and written, while allowing element types as
+/* If true, then loaded file should not be persisted to disk. */
+static bool in_memory;
+
+/* 
+  Define the sequence in which elements are read and written, while allowing element types as 
   function parameters and array indexes.
 */
 #define NODE 0
@@ -46,7 +50,7 @@
 #define RELATION 2
 
 /* The location where we will save all files. This can be set using a command line parameter. */
-static char *database_path;
+static const char *database_path;
 
 /* Compact geographic position. Latitude and longitude mapped to the signed 32-bit int range. */
 typedef struct {
@@ -178,10 +182,16 @@ static char *make_db_path (const char *name, uint32_t subfile) {
   The files appear to have their full size using 'ls', but 'du' reveals that no blocks are in use.
 */
 void *map_file(const char *name, uint32_t subfile, size_t size) {
-    make_db_path (name, subfile);
-    printf("Mapping file '%s' of size %sB.\n", path_buf, human(size));
     // including O_TRUNC causes much slower write (swaps pages in?)
-    int fd = open(path_buf, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
+    int fd;
+    if (in_memory) {
+        fd = shm_open(name, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
+        printf("Opening shared memory object '%s' of size %sB.\n", path_buf, human(size));
+    } else {
+        make_db_path (name, subfile);
+        printf("Mapping file '%s' of size %sB.\n", path_buf, human(size));
+        fd = open(path_buf, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
+    }
     void *base = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     if (base == MAP_FAILED)
         die("Could not memory map file.");
@@ -552,7 +562,8 @@ int main (int argc, const char * argv[]) {
 
     if (argc != 3 && argc != 6) usage();
     database_path = argv[1];
-
+    in_memory = (strcmp(database_path, "memory") == 0);
+ 
     /* Memory-map files for each OSM element type, and for references between them. */
     grid       = map_file("grid",       0, sizeof(Grid));
     ways       = map_file("ways",       0, sizeof(Way)      * MAX_WAY_ID);
