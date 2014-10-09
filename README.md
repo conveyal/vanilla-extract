@@ -1,7 +1,7 @@
 vanilla-extract
 ===============
 
-Clone OSM planet and perform bounding-box extracts for routing. Consumes and produces PBF format.
+Clone OSM planet and perform bounding-box extracts for bulk data users. Consumes and produces PBF format.
 
 ## compiling
 
@@ -37,4 +37,12 @@ Once your PBF data is loaded, to perform an extract run:
 `./vex <database_directory> <min_lat> <min_lon> <max_lat> <max_lon>`
 
 The extract will be saved to the database directory under the name `out.pbf`. (This will of course be changed to stdout or a user-specified filename soon.)
+
+## road ahead
+
+Future possbilities include:
+
+* Keep db in sync with minutely updates
+* Allow testing to see if a given bounding box has been invalidated by updates since X date 
+* Build HTTP end-point to stream PBF directly, skipping disk for outputs
 
