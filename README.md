@@ -45,7 +45,8 @@ Remaining loose ends to provide lossless extracts:
 * Avoid repeated instances of intersection nodes. Solvable with a sparse bitset (already implemented).
 * Retain isolated nodes that are not referenced by a way. Such nodes must be indexed alongside the ways in each grid bin.
 * Reading, storage, and writing of relations.
-
+* Dense nodes.
+ 
 Future possbilities include:
 
 * Keep db in sync with minutely updates
