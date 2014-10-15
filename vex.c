@@ -2,6 +2,7 @@
 
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/file.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -111,6 +112,10 @@ typedef struct {
     uint32_t cells[GRID_DIM][GRID_DIM]; // contains indexes to way_blocks
 } Grid;
 
+/* File descriptor for the lockfile. */
+/* Use BSD-style locks which are associated with the file, not the process. */
+static int lock_fd; 
+
 /* Print human readable representation based on multiples of 1024 into a static buffer. */
 static char human_buffer[128];
 char *human (size_t bytes) {
@@ -151,7 +156,7 @@ static char *make_db_path (const char *name, uint32_t subfile) {
     if (strlen(name) >= sizeof(path_buf) - strlen(database_path) - 12)
         die ("Name too long.");
     if (in_memory) {
-        sprintf (path_buf, "%s.%d", name, subfile);
+        sprintf (path_buf, "vex_%s.%d", name, subfile);
     } else {
         size_t path_length = strlen(database_path);
         if (path_length == 0)
@@ -566,7 +571,9 @@ int main (int argc, const char * argv[]) {
     if (argc != 3 && argc != 6) usage();
     database_path = argv[1];
     in_memory = (strcmp(database_path, "memory") == 0);
- 
+    lock_fd = open("/tmp/vex.lock", O_CREAT, S_IRWXU);
+    if (lock_fd == -1) die ("Error opening or creating lock file.");
+
     /* Memory-map files for each OSM element type, and for references between them. */
     grid       = map_file("grid",       0, sizeof(Grid));
     ways       = map_file("ways",       0, sizeof(Way)      * MAX_WAY_ID);
@@ -580,8 +587,13 @@ int main (int argc, const char * argv[]) {
         osm_callbacks_t callbacks;
         callbacks.way = &handle_way;
         callbacks.node = &handle_node;
+        /* Request an exclusive write lock, blocking while reads complete. */
+        printf("Acquiring exclusive write lock on database.\n");
+        flock(lock_fd, LOCK_EX); 
         scan_pbf(filename, &callbacks); // we could just pass the callbacks by value
         fillFactor();
+        /* Release exclusive write lock, allowing reads to begin. */
+        flock(lock_fd, LOCK_UN);
         printf("loaded %ld nodes and %ld ways total.\n", nodes_loaded, ways_loaded);
         return EXIT_SUCCESS;
     } else if (argc == 6) {
@@ -605,6 +617,9 @@ int main (int argc, const char * argv[]) {
         uint32_t min_ybin = bin(cmin.y);
         uint32_t max_ybin = bin(cmax.y);
 
+        /* Request a shared read lock, blocking while any writes to complete. */
+        printf("Acquiring shared read lock on database.\n");
+        flock(lock_fd, LOCK_SH); 
         FILE *pbf_file = open_output_file("out.pbf", 0);
         write_pbf_begin(pbf_file);
 
@@ -652,6 +667,7 @@ int main (int argc, const char * argv[]) {
             write_pbf_flush();
         }
         fclose(pbf_file);
+        flock(lock_fd, LOCK_UN); // release the shared lock, allowing writes to begin.
     }
 
 }
