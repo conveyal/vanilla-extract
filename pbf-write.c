@@ -55,8 +55,7 @@ static uint8_t blob_header_buffer[64*1024];
   The first blob in the stream should be a header_blob. 
   Its payload is a packed HeaderBlock rather than a packed PrimitiveBlock.
 */
-static void 
-write_one_blob (uint8_t *payload, uint64_t payload_len, char *type, FILE *out) {
+static void write_one_blob (uint8_t *payload, uint64_t payload_len, char *type, FILE *out) {
 
     /* Compress the payload. */
     ProtobufCBinaryData zbd;
@@ -211,22 +210,6 @@ static void write_pbf_data_blob (bool nodes, bool ways) {
 
 }
 
-/* PUBLIC Begin writing a PBF file, and perform some setup. */
-void write_pbf_begin (FILE *out_file) {
-    out = out_file;
-    initialize_pointer_arrays();
-    write_pbf_header_blob();
-    Dedup_init(); 
-}
-
-/* PUBLIC Write out a block for any objects remaining in the buffer. Call at the end of output. */
-void write_pbf_flush() {
-    if (node_block_count > 0 || way_block_count > 0) {
-        write_pbf_data_blob(true, true);
-    }
-}
-
-
 // TODO a function that gets a pointer to the next available way struct (avoid copying)
 // TODO clearly there can be only one file at a time, just make that a static variable
 
@@ -259,12 +242,28 @@ static size_t load_tags(uint8_t *coded_tags, /*OUT*/ uint32_t **keys, /*OUT*/ ui
     *keys = kbuf;
     *vals = vbuf;
     return n_tags;
+}
 
+
+/* PUBLIC Begin writing a PBF file, and perform some setup. */
+void pbf_write_begin (FILE *out_file) {
+    out = out_file;
+    initialize_pointer_arrays();
+    write_pbf_header_blob();
+    Dedup_init(); 
+}
+
+
+/* PUBLIC Write out a block for any objects remaining in the buffer. Call at the end of output. */
+void pbf_write_flush() {
+    if (node_block_count > 0 || way_block_count > 0) {
+        write_pbf_data_blob(true, true);
+    }
 }
 
 
 /* PUBLIC Write one way in a buffered fashion, writing out a blob as needed (every 8k objects). */
-void write_pbf_way(uint64_t way_id, int64_t *refs, uint8_t *coded_tags) {
+void pbf_write_way(uint64_t way_id, int64_t *refs, uint8_t *coded_tags) {
 
     /* 
       We must copy the refs list, and cannot use it directly: 
@@ -304,10 +303,12 @@ void write_pbf_way(uint64_t way_id, int64_t *refs, uint8_t *coded_tags) {
     if (way_block_count == PBF_BLOCK_SIZE) {
         write_pbf_data_blob(false, true);
     }
+
 }
 
+
 /* PUBLIC Write one node in a buffered fashion, writing out a blob as needed (every 8k objects). */
-void write_pbf_node(uint64_t node_id, double lat, double lon, uint8_t *coded_tags) {
+void pbf_write_node(uint64_t node_id, double lat, double lon, uint8_t *coded_tags) {
 
     OSMPBF__Node *node = &(node_block[node_block_count]);
     osmpbf__node__init(node);

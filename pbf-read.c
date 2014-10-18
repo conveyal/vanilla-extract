@@ -51,7 +51,7 @@ static void pbf_unmap() {
 #define MAX_BLOB_SIZE_UNCOMPRESSED 32 * 1024 * 1024
 static unsigned char zbuf[MAX_BLOB_SIZE_UNCOMPRESSED];
 
-// TODO ZLIB actually has compress/uncompress utility functions that work on buffers.
+// ZLIB has utility (un)compress functions that work on buffers.
 static int zinflate(ProtobufCBinaryData *in, unsigned char *out) {
     int ret;
     
@@ -79,25 +79,14 @@ static int zinflate(ProtobufCBinaryData *in, unsigned char *out) {
     
 }
 
-static long noderefs = 0;
-static void handle_way(OSMPBF__Way *way, ProtobufCBinaryData *string_table) {
-    for (int r = 0; r < way->n_refs; ++r) {
-        ++noderefs;
-    }
-}
-
-static long nodecount = 0;
-static void handle_node(OSMPBF__Node *node, ProtobufCBinaryData *string_table) {
-    ++nodecount;
-}
-
-// tags are stored in a string table at the PrimitiveBlock level 
+/* Tags are stored in a string table at the PrimitiveBlock level. */
 #define MAX_TAGS 256
-static void handle_primitive_block(OSMPBF__PrimitiveBlock *block, osm_callbacks_t *callbacks) {
+static void handle_primitive_block(OSMPBF__PrimitiveBlock *block, PbfReadCallbacks *callbacks) {
     ProtobufCBinaryData *string_table = block->stringtable->s;
     int32_t granularity = block->has_granularity ? block->granularity : 1;
     int64_t lat_offset = block->has_lat_offset ? block->lat_offset : 0;
     int64_t lon_offset = block->has_lon_offset ? block->lon_offset : 0;
+    if (granularity != 1) die ("Granularity is unsupported.");
     // printf("pblock with granularity %d and offsets %d, %d\n", granularity, lat_offset, lon_offset);
     // It seems like a block often contains only one group.
     for (int g = 0; g < block->n_primitivegroup; ++g) { 
@@ -159,11 +148,17 @@ static void handle_primitive_block(OSMPBF__PrimitiveBlock *block, osm_callbacks_
                 }
             }
         }
+        if (callbacks->relation) {
+            for (int r = 0; r < group->n_relations; ++r) {
+                OSMPBF__Relation *relation = group->relations[r];
+                (*(callbacks->relation))(relation, string_table);
+            }
+        }
     }
 }
 
-/* externally visible */
-void scan_pbf(const char *filename, osm_callbacks_t *callbacks) {
+/* Externally visible function. */
+void pbf_read (const char *filename, PbfReadCallbacks *callbacks) {
     pbf_map(filename);
     OSMPBF__HeaderBlock *header = NULL;
     int blobcount = 0;
@@ -235,18 +230,31 @@ void scan_pbf(const char *filename, osm_callbacks_t *callbacks) {
     pbf_unmap();
 }
 
+/* Example way callback that just counts node references. */
+static long noderefs = 0;
+static void handle_way(OSMPBF__Way *way, ProtobufCBinaryData *string_table) {
+    noderefs += way->n_refs;
+}
+
+/* Example node callback that just counts nodes. */
+static long nodecount = 0;
+static void handle_node(OSMPBF__Node *node, ProtobufCBinaryData *string_table) {
+    ++nodecount;
+}
+
+/* Example main function that calls this PBF reader. */
 int test_main (int argc, const char * argv[]) {
-    if (argc < 2)
-        die("usage: pbf input.pbf");
+    if (argc < 2) die("usage: pbf input.pbf");
     const char *filename = argv[1];
-    osm_callbacks_t callbacks;
-    callbacks.way = &handle_way;
-    callbacks.node = &handle_node;
-    //callbacks.node = NULL;
-    scan_pbf(filename, &callbacks);
+    PbfReadCallbacks callbacks = {
+        .way  = &handle_way,
+        .node = &handle_node,
+        .relation = NULL
+    };
+    pbf_read(filename, &callbacks);
     printf("total node references %ld\n", noderefs);
     printf("total nodes %ld\n", nodecount);
-    return 0;
+    return EXIT_SUCCESS;
 }
 
 

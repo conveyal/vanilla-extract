@@ -584,13 +584,15 @@ int main (int argc, const char * argv[]) {
     if (argc == 3) {
         /* LOAD */
         const char *filename = argv[2];
-        osm_callbacks_t callbacks;
-        callbacks.way = &handle_way;
-        callbacks.node = &handle_node;
+        PbfReadCallbacks callbacks = {
+            .way  = &handle_way,
+            .node = &handle_node,
+            .relation = NULL
+        };
         /* Request an exclusive write lock, blocking while reads complete. */
         printf("Acquiring exclusive write lock on database.\n");
         flock(lock_fd, LOCK_EX); 
-        scan_pbf(filename, &callbacks); // we could just pass the callbacks by value
+        pbf_read (filename, &callbacks); // we could just pass the callbacks by value
         fillFactor();
         /* Release exclusive write lock, allowing reads to begin. */
         flock(lock_fd, LOCK_UN);
@@ -621,7 +623,7 @@ int main (int argc, const char * argv[]) {
         printf("Acquiring shared read lock on database.\n");
         flock(lock_fd, LOCK_SH); 
         FILE *pbf_file = open_output_file("out.pbf", 0);
-        write_pbf_begin(pbf_file);
+        pbf_write_begin(pbf_file);
 
         /* Make two passes, first outputting all nodes, then all ways. */
         for (int stage = NODE; stage < RELATION; stage++) {
@@ -639,7 +641,7 @@ int main (int argc, const char * argv[]) {
                             Way way = ways[way_id];
                             if (stage == WAY) {
                                 uint8_t *tags = tag_data_for_id(way_id, WAY);
-                                write_pbf_way(way_id, &(node_refs[way.node_ref_offset]), &(tags[way.tags]));
+                                pbf_write_way(way_id, &(node_refs[way.node_ref_offset]), &(tags[way.tags]));
                             } else if (stage == NODE) {
                                 /* Output all nodes in this way. */
                                 //FIXME Intersection nodes are repeated.
@@ -653,7 +655,7 @@ int main (int argc, const char * argv[]) {
                                     }
                                     Node node = nodes[node_id];
                                     uint8_t *tags = tag_data_for_id(node_id, NODE);
-                                    write_pbf_node(node_id, get_lat(&(node.coord)),
+                                    pbf_write_node(node_id, get_lat(&(node.coord)),
                                         get_lon(&(node.coord)), &(tags[node.tags]));
                                 }
                             }
@@ -664,7 +666,7 @@ int main (int argc, const char * argv[]) {
                 }
             }
             /* Write out any buffered nodes or ways before beginning the next PBF writing stage. */
-            write_pbf_flush();
+            pbf_write_flush();
         }
         fclose(pbf_file);
         flock(lock_fd, LOCK_UN); // release the shared lock, allowing writes to begin.
