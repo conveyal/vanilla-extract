@@ -34,10 +34,9 @@ Loading a full planet PBF to a solid-state drive will take at least an hour, so 
 
 Once your PBF data is loaded, to perform an extract run:
 
-`./vex <database_directory> <min_lat> <min_lon> <max_lat> <max_lon> [<output_file.pbf>]`
+`./vex <database_directory> <min_lat> <min_lon> <max_lat> <max_lon> <output_file.pbf>`
 
-If you don't specify a filename, the extract will be saved to the database directory under the name `out.pbf`. If you
-specify `-`, it will save to standard output.
+If you specify `-` as the output file, `vex` will write to standard output.
 
 ## road ahead
 

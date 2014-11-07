@@ -470,7 +470,7 @@ static void fillFactor () {
 /* Print out a message explaining command line parameters to the user, then exit. */
 static void usage () {
     fprintf(stderr, "usage:\nvex database_dir input.osm.pbf\n");
-    fprintf(stderr, "vex database_dir min_lat min_lon max_lat max_lon\n");
+    fprintf(stderr, "vex database_dir min_lat min_lon max_lat max_lon (output_file.pbf|-)\n");
     exit(EXIT_SUCCESS);
 }
 
@@ -568,7 +568,7 @@ static void save_way (int64_t way_id) {
 
 int main (int argc, const char * argv[]) {
 
-    if (argc != 3 && argc != 6 && argc != 7) usage();
+    if (argc != 3 && argc != 7) usage();
     database_path = argv[1];
     in_memory = (strcmp(database_path, "memory") == 0);
     lock_fd = open("/tmp/vex.lock", O_CREAT, S_IRWXU);
@@ -598,7 +598,7 @@ int main (int argc, const char * argv[]) {
         flock(lock_fd, LOCK_UN);
         fprintf(stderr, "loaded %ld nodes and %ld ways total.\n", nodes_loaded, ways_loaded);
         return EXIT_SUCCESS;
-    } else if (argc == 6 || argc == 7) {
+    } else if (argc == 7) {
         /* QUERY */
         double min_lat = strtod(argv[2], NULL);
         double min_lon = strtod(argv[3], NULL);
@@ -625,13 +625,11 @@ int main (int argc, const char * argv[]) {
 
         /* Get the output file, or default to out.pbf if not specified */
         FILE *pbf_file;
-        if (argc == 7)
-          if (strcmp(argv[6], "-") == 0)
-            pbf_file = stdout;
-          else
-            pbf_file = open_output_file(argv[6], 0);
+
+        if (strcmp(argv[6], "-") == 0)
+          pbf_file = stdout;
         else
-          pbf_file = open_output_file("out.pbf", 0);
+          pbf_file = open_output_file(argv[6], 0);
 
         pbf_write_begin(pbf_file);
 
