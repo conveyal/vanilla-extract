@@ -23,11 +23,11 @@
 
     protobuf-c provides ProtobufCBuffer self-expanding buffers.
     However the PBF spec also gives maximum sizes for chunks:
-    "The uncompressed length of a Blob *should* be less than 16 MiB (16*1024*1024 bytes) 
+    "The uncompressed length of a Blob *should* be less than 16 MiB (16*1024*1024 bytes)
     and *must* be less than 32 MiB." So we can just make the buffers that size.
-    
+
     A PBF file is chunked, and can be produced and consumed in a streaming fashion.
-    However, many applications require the nodes to arrive before the ways.    
+    However, many applications require the nodes to arrive before the ways.
     A PBF file is a series of blobs. Each blob is preceded by its size in network byte order.
 
 The PBF format is a repeating sequence of:
@@ -36,8 +36,8 @@ The PBF format is a repeating sequence of:
   serialized Blob message (size is given in the BlobHeader)
 
 The BlobHeader gives the type of the following Blob, a string which can be OSMHeader or OSMData.
-You must send one OSMHeader blob before sending the OSMData blobs. 
-Each OSMData blob contains some optionally zlib-compressed bytes, which contain one PrimitiveBlock 
+You must send one OSMHeader blob before sending the OSMData blobs.
+Each OSMData blob contains some optionally zlib-compressed bytes, which contain one PrimitiveBlock
 (an independently decompressible block of 8k entities).
 
 We should be able to provide the DenseNodes, and perhaps Sort.Type_then_ID features.
@@ -50,9 +50,9 @@ static uint8_t blob_buffer[16*1024*1024];
 static uint8_t zlib_buffer[16*1024*1024];
 static uint8_t blob_header_buffer[64*1024];
 
-/* 
-  Provide an uncompressed payload. 
-  The first blob in the stream should be a header_blob. 
+/*
+  Provide an uncompressed payload.
+  The first blob in the stream should be a header_blob.
   Its payload is a packed HeaderBlock rather than a packed PrimitiveBlock.
 */
 static void write_one_blob (uint8_t *payload, uint64_t payload_len, char *type, FILE *out) {
@@ -62,7 +62,7 @@ static void write_one_blob (uint8_t *payload, uint64_t payload_len, char *type, 
     zbd.data = zlib_buffer;
     zbd.len = sizeof(zlib_buffer);
     if (compress(zlib_buffer, &(zbd.len), payload, payload_len) != Z_OK) {
-        printf("Error while compressing PBF blob payload.");
+        fprintf(stderr, "Error while compressing PBF blob payload.");
         exit(-1);
     }
 
@@ -90,11 +90,11 @@ static void write_one_blob (uint8_t *payload, uint64_t payload_len, char *type, 
     fwrite(&blob_buffer, blob_packed_length, 1, out);
 
     /*
-    printf("%s blob written:\n", type);
-    printf("payload length (raw)     %ld\n", payload_len);
-    printf("payload length (zipped)  %ld\n", zbd.len);
-    printf("packed length of body    %zd\n", blob_packed_length);
-    printf("packed length of header  %zd\n", blob_header_packed_length);
+    fprintf(stderr, "%s blob written:\n", type);
+    fprintf(stderr, "payload length (raw)     %ld\n", payload_len);
+    fprintf(stderr, "payload length (zipped)  %ld\n", zbd.len);
+    fprintf(stderr, "packed length of body    %zd\n", blob_packed_length);
+    fprintf(stderr, "packed length of header  %zd\n", blob_header_packed_length);
     */
 
 }
@@ -110,11 +110,11 @@ static uint32_t way_block_count; // number of ways now stored in block
 
 /* protobuf-c API takes arrays of pointers to structs. Initialize those arrays once at startup. */
 static void initialize_pointer_arrays() {
-    OSMPBF__Way  *wp = &(way_block[0]); 
+    OSMPBF__Way  *wp = &(way_block[0]);
     OSMPBF__Node *np = &(node_block[0]);
     for (int i = 0; i < PBF_BLOCK_SIZE; i++) {
-        way_block_p[i]  = wp++; 
-        node_block_p[i] = np++; 
+        way_block_p[i]  = wp++;
+        node_block_p[i] = np++;
     }
     node_block_count = 0;
     way_block_count = 0;
@@ -141,7 +141,7 @@ static size_t kv_n = 0;
 /* Allocate a chunk of n string pointers for tag keys or values. */
 static uint32_t *kv_alloc(size_t n) {
     if (kv_n + n > MAX_KEYS_VALS) {
-        printf("too many key/val string table references in a block.\n");
+        fprintf(stderr, "too many key/val string table references in a block.\n");
         return NULL;
     }
     uint32_t *ret = &(kv_buff[kv_n]);
@@ -188,12 +188,12 @@ static void write_pbf_data_blob (bool nodes, bool ways) {
     // We don't use any of the other block-level features (offsets, granularity, etc.)
 
     if (nodes && node_block_count > 0) {
-        printf("Writing data blob containing nodes.\n");
+        fprintf(stderr, "Writing data blob containing nodes.\n");
         pgroup.nodes = node_block_p;
         pgroup.n_nodes = node_block_count;
-    } 
+    }
     if (ways && way_block_count > 0) {
-        printf("Writing data blob containing ways.\n");
+        fprintf(stderr, "Writing data blob containing ways.\n");
         pgroup.ways = way_block_p;
         pgroup.n_ways = way_block_count;
     }
@@ -219,7 +219,7 @@ static size_t load_tags(uint8_t *coded_tags, /*OUT*/ uint32_t **keys, /*OUT*/ ui
     /* First count tags. */
     size_t n_tags = 0;
     char *t = (char*) coded_tags;
-    while (*t != INT8_MAX) { 
+    while (*t != INT8_MAX) {
         KeyVal kv;
         t += decode_tag(t, &kv);
         n_tags++;
@@ -250,7 +250,7 @@ void pbf_write_begin (FILE *out_file) {
     out = out_file;
     initialize_pointer_arrays();
     write_pbf_header_blob();
-    Dedup_init(); 
+    Dedup_init();
 }
 
 
@@ -265,8 +265,8 @@ void pbf_write_flush() {
 /* PUBLIC Write one way in a buffered fashion, writing out a blob as needed (every 8k objects). */
 void pbf_write_way(uint64_t way_id, int64_t *refs, uint8_t *coded_tags) {
 
-    /* 
-      We must copy the refs list, and cannot use it directly: 
+    /*
+      We must copy the refs list, and cannot use it directly:
       It contains negative sentinel values and is not delta coded.
       First, count number of node refs in this way.
     */
@@ -278,7 +278,7 @@ void pbf_write_way(uint64_t way_id, int64_t *refs, uint8_t *coded_tags) {
     /* Delta code refs, copying them into a dynamically allocated buffer. */
     int64_t *refs_buf = malloc(n_refs * sizeof(int64_t)); // deallocated in reset_way_block
     if (refs_buf == NULL) exit (-1);
-    int64_t prev_ref = 0; 
+    int64_t prev_ref = 0;
     for (int i = 0; i < n_refs; i++) {
         int64_t ref = refs[i];
         if (ref < 0) ref = -ref; // should only happen on the last ref in the list
@@ -327,6 +327,3 @@ void pbf_write_node(uint64_t node_id, double lat, double lon, uint8_t *coded_tag
     }
 
 }
-
-
-
