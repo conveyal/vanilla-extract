@@ -36,7 +36,8 @@ Once your PBF data is loaded, to perform an extract run:
 
 `./vex <database_directory> <min_lat> <min_lon> <max_lat> <max_lon> [<output_file.pbf>]`
 
-If you don't specify a filename, the extract will be saved to the database directory under the name `out.pbf`.
+If you don't specify a filename, the extract will be saved to the database directory under the name `out.pbf`. If you
+specify `-`, it will save to standard output.
 
 ## road ahead
 
