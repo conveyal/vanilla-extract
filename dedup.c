@@ -74,11 +74,11 @@ void Dedup_print() {
     for (int i = 0; i < SIZE; ++i) {
         Entry *e = &(entries[i]);
         if (e->key != NULL) {
-            printf ("[%02d] ", i);
+            fprintf (stderr, "[%02d] ", i);
             for (; e != NULL; e = e->next) {
-                printf ("%03d %s", e->val, e->key);
+                fprintf (stderr, "%03d %s", e->val, e->key);
             }
-            printf ("\n");
+            fprintf (stderr, "\n");
         }
     }
 }
@@ -120,13 +120,13 @@ int test() {
     Dedup_dedup("tomorrow, it rains");
     Dedup_dedup("              ...espace");
     for (int i = 0; i < 100; ++i) Dedup_dedup("hello");
-    printf("n = %d\n", n);
-    printf("index of hello is %d\n", Dedup_dedup("hello"));
+    fprintf(stderr, "n = %d\n", n);
+    fprintf(stderr, "index of hello is %d\n", Dedup_dedup("hello"));
     Dedup_print();
     Dedup_clear();
     for (int i = 0; i < 100; ++i) Dedup_dedup("hello");
-    printf("n = %d\n", n);
-    printf("index of hello is %d\n", Dedup_dedup("hello"));
+    fprintf(stderr, "n = %d\n", n);
+    fprintf(stderr, "index of hello is %d\n", Dedup_dedup("hello"));
     Dedup_clear();
     return 0;
 }

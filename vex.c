@@ -42,8 +42,8 @@
 /* If true, then loaded file should not be persisted to disk. */
 static bool in_memory;
 
-/* 
-  Define the sequence in which elements are read and written, while allowing element types as 
+/*
+  Define the sequence in which elements are read and written, while allowing element types as
   function parameters and array indexes.
 */
 #define NODE 0
@@ -114,7 +114,7 @@ typedef struct {
 
 /* File descriptor for the lockfile. */
 /* Use BSD-style locks which are associated with the file, not the process. */
-static int lock_fd; 
+static int lock_fd;
 
 /* Print human readable representation based on multiples of 1024 into a static buffer. */
 static char human_buffer[128];
@@ -146,7 +146,7 @@ char *human (size_t bytes) {
 }
 
 void die (char *s) {
-    printf("%s\n", s);
+    fprintf(stderr, "%s\n", s);
     exit(EXIT_FAILURE);
 }
 
@@ -194,10 +194,10 @@ void *map_file(const char *name, uint32_t subfile, size_t size) {
     make_db_path (name, subfile);
     int fd;
     if (in_memory) {
-        printf("Opening shared memory object '%s' of size %sB.\n", path_buf, human(size));
+        fprintf(stderr, "Opening shared memory object '%s' of size %sB.\n", path_buf, human(size));
         fd = shm_open(path_buf, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
     } else {
-        printf("Mapping file '%s' of size %sB.\n", path_buf, human(size));
+        fprintf(stderr, "Mapping file '%s' of size %sB.\n", path_buf, human(size));
         // including O_TRUNC causes much slower write (swaps pages in?)
         fd = open(path_buf, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
     }
@@ -211,7 +211,7 @@ void *map_file(const char *name, uint32_t subfile, size_t size) {
 
 /* Open a buffered append FILE in the current working directory, performing some checks. */
 FILE *open_output_file(const char *name, uint8_t subfile) {
-    printf("Opening file '%s' as append stream.\n", name);
+    fprintf(stderr, "Opening file '%s' as append stream.\n", name);
     FILE *file = fopen(name, "a"); // Creates if file does not exist.
     if (file == NULL) die("Could not open file for output.");
     return file;
@@ -234,12 +234,12 @@ uint32_t n_node_refs; // The number of node refs currently used.
 uint32_t way_block_count = 1;
 static uint32_t new_way_block() {
     if (way_block_count % 100000 == 0)
-        printf("%dk way blocks in use out of %dk.\n", way_block_count/1000, MAX_WAY_BLOCKS/1000);
+        fprintf(stderr, "%dk way blocks in use out of %dk.\n", way_block_count/1000, MAX_WAY_BLOCKS/1000);
     if (way_block_count >= MAX_WAY_BLOCKS)
         die("More way reference blocks are used than expected.");
     // A negative value in the last ref entry gives the number of free slots in this block.
     way_blocks[way_block_count].refs[WAY_BLOCK_SIZE-1] = -WAY_BLOCK_SIZE;
-    // printf("created way block %d\n", way_block_count);
+    // fprintf(stderr, "created way block %d\n", way_block_count);
     return way_block_count++;
 }
 
@@ -262,8 +262,8 @@ static uint32_t get_grid_way_block (Node *node) {
     if (*cell == 0) {
         *cell = new_way_block();
     }
-    // printf("xbin=%d ybin=%d\n", xb, yb);
-    // printf("index=%d\n", index);
+    // fprintf(stderr, "xbin=%d ybin=%d\n", xb, yb);
+    // fprintf(stderr, "index=%d\n", index);
     return *cell;
 }
 
@@ -308,8 +308,8 @@ static TagSubfile *tag_subfile_for_id (int64_t osmid, int entity_type) {
     return ts;
 }
 
-/* 
-  Grab a pointer to tag subfile data directly. Convenience method to avoid manually dereferencing. 
+/*
+  Grab a pointer to tag subfile data directly. Convenience method to avoid manually dereferencing.
   This does not seek to the element within the tag file, it returns the beginning adress.
   TODO perform the seek here as well?
 */
@@ -395,7 +395,7 @@ static void handle_node (OSMPBF__Node *node, ProtobufCBinaryData *string_table) 
     nodes[node->id].tags = write_tags (node->keys, node->vals, node->n_keys, string_table, ts);
     nodes_loaded++;
     if (nodes_loaded % 1000000 == 0)
-        printf("loaded %ldM nodes\n", nodes_loaded / 1000000);
+        fprintf(stderr, "loaded %ldM nodes\n", nodes_loaded / 1000000);
     //printf ("---\nlon=%.5f lat=%.5f\nx=%d y=%d\n", lon, lat, nodes[node->id].x, nodes[node->id].y);
 }
 
@@ -414,8 +414,8 @@ static void handle_way (OSMPBF__Way *way, ProtobufCBinaryData *string_table) {
        ID is used to signal the end of the list.
     */
     ways[way->id].node_ref_offset = n_node_refs;
-    //printf("WAY %ld\n", way->id);
-    //printf("node ref offset %d\n", ways[way->id].node_ref_offset);
+    //fprintf(stderr, "WAY %ld\n", way->id);
+    //fprintf(stderr, "node ref offset %d\n", ways[way->id].node_ref_offset);
     int64_t node_id = 0;
     for (int r = 0; r < way->n_refs; r++, n_node_refs++) {
         node_id += way->refs[r]; // node refs are delta coded
@@ -447,7 +447,7 @@ static void handle_way (OSMPBF__Way *way, ProtobufCBinaryData *string_table) {
     TagSubfile *ts = tag_subfile_for_id(way->id, WAY);
     ways[way->id].tags = write_tags (way->keys, way->vals, way->n_keys, string_table, ts);
     if (ways_loaded % 1000000 == 0) {
-        printf("loaded %ldM ways\n", ways_loaded / 1000000);
+        fprintf(stderr, "loaded %ldM ways\n", ways_loaded / 1000000);
     }
 }
 
@@ -463,26 +463,26 @@ static void fillFactor () {
             if (grid->cells[i][j] != 0) used++;
         }
     }
-    printf("index grid: %d used, %.2f%% full\n",
+    fprintf(stderr, "index grid: %d used, %.2f%% full\n",
         used, ((double)used) / (GRID_DIM * GRID_DIM) * 100);
 }
 
 /* Print out a message explaining command line parameters to the user, then exit. */
 static void usage () {
-    printf("usage:\nvex database_dir input.osm.pbf\n");
-    printf("vex database_dir min_lat min_lon max_lat max_lon\n");
+    fprintf(stderr, "usage:\nvex database_dir input.osm.pbf\n");
+    fprintf(stderr, "vex database_dir min_lat min_lon max_lat max_lon (output_file.pbf|-)\n");
     exit(EXIT_SUCCESS);
 }
 
 /* Range checking. */
 static void check_lat_range(double lat) {
-    if (lat < -90 && lat > 90)
+    if (lat < -90 || lat > 90)
         die ("Latitude out of range.");
 }
 
 /* Range checking. */
 static void check_lon_range(double lon) {
-    if (lon < -180 && lon > 180)
+    if (lon < -180 || lon > 180)
         die ("Longitude out of range.");
 }
 
@@ -493,21 +493,21 @@ static void print_tags (uint32_t idx) {
     KeyVal kv;
     while (*t != INT8_MAX) {
         t += decode_tag(t, &kv);
-        printf("%s=%s ", kv.key, kv.val);
+        fprintf(stderr, "%s=%s ", kv.key, kv.val);
     }
 }
 
 static void print_node (uint64_t node_id) {
     Node node = nodes[node_id];
-    printf("  node %ld (%.6f, %.6f) ", node_id, get_lat(&node.coord), get_lon(&node.coord));
+    fprintf(stderr, "  node %ld (%.6f, %.6f) ", node_id, get_lat(&node.coord), get_lon(&node.coord));
     print_tags(nodes[node_id].tags);
-    printf("\n");
+    fprintf(stderr, "\n");
 }
 
 static void print_way (int64_t way_id) {
-    printf("way %ld ", way_id);
+    fprintf(stderr, "way %ld ", way_id);
     print_tags(ways[way_id].tags);
-    printf("\n");
+    fprintf(stderr, "\n");
 }
 
 /*
@@ -568,7 +568,7 @@ static void save_way (int64_t way_id) {
 
 int main (int argc, const char * argv[]) {
 
-    if (argc != 3 && argc != 6) usage();
+    if (argc != 3 && argc != 7) usage();
     database_path = argv[1];
     in_memory = (strcmp(database_path, "memory") == 0);
     lock_fd = open("/tmp/vex.lock", O_CREAT, S_IRWXU);
@@ -590,21 +590,21 @@ int main (int argc, const char * argv[]) {
             .relation = NULL
         };
         /* Request an exclusive write lock, blocking while reads complete. */
-        printf("Acquiring exclusive write lock on database.\n");
-        flock(lock_fd, LOCK_EX); 
+        fprintf(stderr, "Acquiring exclusive write lock on database.\n");
+        flock(lock_fd, LOCK_EX);
         pbf_read (filename, &callbacks); // we could just pass the callbacks by value
         fillFactor();
         /* Release exclusive write lock, allowing reads to begin. */
         flock(lock_fd, LOCK_UN);
-        printf("loaded %ld nodes and %ld ways total.\n", nodes_loaded, ways_loaded);
+        fprintf(stderr, "loaded %ld nodes and %ld ways total.\n", nodes_loaded, ways_loaded);
         return EXIT_SUCCESS;
-    } else if (argc == 6) {
+    } else if (argc == 7) {
         /* QUERY */
         double min_lat = strtod(argv[2], NULL);
         double min_lon = strtod(argv[3], NULL);
         double max_lat = strtod(argv[4], NULL);
         double max_lon = strtod(argv[5], NULL);
-        printf("min = (%.5lf, %.5lf) max = (%.5lf, %.5lf)\n", min_lat, min_lon, max_lat, max_lon);
+        fprintf(stderr, "min = (%.5lf, %.5lf) max = (%.5lf, %.5lf)\n", min_lat, min_lon, max_lat, max_lon);
         check_lat_range(min_lat);
         check_lat_range(max_lat);
         check_lon_range(min_lon);
@@ -620,9 +620,17 @@ int main (int argc, const char * argv[]) {
         uint32_t max_ybin = bin(cmax.y);
 
         /* Request a shared read lock, blocking while any writes to complete. */
-        printf("Acquiring shared read lock on database.\n");
-        flock(lock_fd, LOCK_SH); 
-        FILE *pbf_file = open_output_file("out.pbf", 0);
+        fprintf(stderr, "Acquiring shared read lock on database.\n");
+        flock(lock_fd, LOCK_SH);
+
+        /* Get the output file, or default to out.pbf if not specified */
+        FILE *pbf_file;
+
+        if (strcmp(argv[6], "-") == 0)
+          pbf_file = stdout;
+        else
+          pbf_file = open_output_file(argv[6], 0);
+
         pbf_write_begin(pbf_file);
 
         /* Make two passes, first outputting all nodes, then all ways. */

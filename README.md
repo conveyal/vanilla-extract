@@ -23,7 +23,7 @@ Then just make as usual:
 
 ## usage
 
-Only store the database on a filesystem that supports sparse files (ext3 and ext4 do). Everything goes much quicker on a solid-state disk. 
+Only store the database on a filesystem that supports sparse files (ext3 and ext4 do). Everything goes much quicker on a solid-state disk.
 The program itself should only need a few megabytes of memory but benefits greatly from free memory that the OS can use as cache.
 
 To load a PBF file into the database:
@@ -34,9 +34,9 @@ Loading a full planet PBF to a solid-state drive will take at least an hour, so 
 
 Once your PBF data is loaded, to perform an extract run:
 
-`./vex <database_directory> <min_lat> <min_lon> <max_lat> <max_lon>`
+`./vex <database_directory> <min_lat> <min_lon> <max_lat> <max_lon> <output_file.pbf>`
 
-The extract will be saved to the database directory under the name `out.pbf`. (This will of course be changed to stdout or a user-specified filename soon.)
+If you specify `-` as the output file, `vex` will write to standard output.
 
 ## road ahead
 
@@ -46,10 +46,9 @@ Remaining loose ends to provide lossless extracts:
 * Retain isolated nodes that are not referenced by a way. Such nodes must be indexed alongside the ways in each grid bin.
 * Reading, storage, and writing of relations.
 * Dense nodes.
- 
+
 Future possbilities include:
 
 * Keep db in sync with minutely updates
-* Allow testing to see if a given bounding box has been invalidated by updates since X date 
+* Allow testing to see if a given bounding box has been invalidated by updates since X date
 * Build HTTP end-point to stream PBF directly, skipping disk for outputs
-
