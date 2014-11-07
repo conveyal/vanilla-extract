@@ -476,13 +476,13 @@ static void usage () {
 
 /* Range checking. */
 static void check_lat_range(double lat) {
-    if (lat < -90 && lat > 90)
+    if (lat < -90 || lat > 90)
         die ("Latitude out of range.");
 }
 
 /* Range checking. */
 static void check_lon_range(double lon) {
-    if (lon < -180 && lon > 180)
+    if (lon < -180 || lon > 180)
         die ("Longitude out of range.");
 }
 
