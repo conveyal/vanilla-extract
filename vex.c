@@ -42,8 +42,8 @@
 /* If true, then loaded file should not be persisted to disk. */
 static bool in_memory;
 
-/* 
-  Define the sequence in which elements are read and written, while allowing element types as 
+/*
+  Define the sequence in which elements are read and written, while allowing element types as
   function parameters and array indexes.
 */
 #define NODE 0
@@ -114,7 +114,7 @@ typedef struct {
 
 /* File descriptor for the lockfile. */
 /* Use BSD-style locks which are associated with the file, not the process. */
-static int lock_fd; 
+static int lock_fd;
 
 /* Print human readable representation based on multiples of 1024 into a static buffer. */
 static char human_buffer[128];
@@ -308,8 +308,8 @@ static TagSubfile *tag_subfile_for_id (int64_t osmid, int entity_type) {
     return ts;
 }
 
-/* 
-  Grab a pointer to tag subfile data directly. Convenience method to avoid manually dereferencing. 
+/*
+  Grab a pointer to tag subfile data directly. Convenience method to avoid manually dereferencing.
   This does not seek to the element within the tag file, it returns the beginning adress.
   TODO perform the seek here as well?
 */
@@ -568,7 +568,7 @@ static void save_way (int64_t way_id) {
 
 int main (int argc, const char * argv[]) {
 
-    if (argc != 3 && argc != 6) usage();
+    if (argc != 3 && argc != 6 && argc != 7) usage();
     database_path = argv[1];
     in_memory = (strcmp(database_path, "memory") == 0);
     lock_fd = open("/tmp/vex.lock", O_CREAT, S_IRWXU);
@@ -591,14 +591,14 @@ int main (int argc, const char * argv[]) {
         };
         /* Request an exclusive write lock, blocking while reads complete. */
         printf("Acquiring exclusive write lock on database.\n");
-        flock(lock_fd, LOCK_EX); 
+        flock(lock_fd, LOCK_EX);
         pbf_read (filename, &callbacks); // we could just pass the callbacks by value
         fillFactor();
         /* Release exclusive write lock, allowing reads to begin. */
         flock(lock_fd, LOCK_UN);
         printf("loaded %ld nodes and %ld ways total.\n", nodes_loaded, ways_loaded);
         return EXIT_SUCCESS;
-    } else if (argc == 6) {
+    } else if (argc == 6 || argc == 7) {
         /* QUERY */
         double min_lat = strtod(argv[2], NULL);
         double min_lon = strtod(argv[3], NULL);
@@ -621,8 +621,18 @@ int main (int argc, const char * argv[]) {
 
         /* Request a shared read lock, blocking while any writes to complete. */
         printf("Acquiring shared read lock on database.\n");
-        flock(lock_fd, LOCK_SH); 
-        FILE *pbf_file = open_output_file("out.pbf", 0);
+        flock(lock_fd, LOCK_SH);
+
+        /* Get the output file, or default to out.pbf if not specified */
+        FILE *pbf_file;
+        if (argc == 7)
+          if (strcmp(argv[6], "-") == 0)
+            pbf_file = stdout;
+          else
+            pbf_file = open_output_file(argv[6], 0);
+        else
+          pbf_file = open_output_file("out.pbf", 0);
+
         pbf_write_begin(pbf_file);
 
         /* Make two passes, first outputting all nodes, then all ways. */
