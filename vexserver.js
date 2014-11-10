@@ -19,10 +19,10 @@ var cmd  = process.env.VEX_CMD  || 'vex';
 var vex = function (req, res) {
   var query = url.parse(req.url, true).query;
 
-  var north = Number(query.north);
-  var south = Number(query.south);
-  var east  = Number(query.east);
-  var west  = Number(query.west);
+  var north = Number(query.north || query.n);
+  var south = Number(query.south || query.s);
+  var east  = Number(query.east  || query.e);
+  var west  = Number(query.west  || query.w);
 
   if (isNaN(north) || isNaN(south) || isNaN(east) || isNaN(west)) {
     res.writeHead(400, {'Content-Type': 'text/plain'});
