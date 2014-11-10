@@ -38,6 +38,20 @@ Once your PBF data is loaded, to perform an extract run:
 
 If you specify `-` as the output file, `vex` will write to standard output.
 
+### usage over http
+
+`vexserver.js` provides a simple NodeJS server to run `vex` over HTTP. This is useful if you want to keep all your data
+in one place, or if you only have one server with a large SSD. It requires data to already be loaded to the database,
+and is used like so:
+
+`node vexserver.js` (on ubuntu, `nodejs vexserver.js`)
+
+Parameters are taken from the environment:
+- VEX_DB: the path to the vex database to use, default '/var/osm/db/'
+- VEX_CMD: the command to run vex, default 'vex'
+- VEX_HOST: the hostname to bind on, or 0.0.0.0 for all interfaces; default 0.0.0.0
+- VEX_PORT: the port to server on, default 8282
+
 ## road ahead
 
 Remaining loose ends to provide lossless extracts:
@@ -47,8 +61,7 @@ Remaining loose ends to provide lossless extracts:
 * Reading, storage, and writing of relations.
 * Dense nodes.
 
-Future possbilities include:
+Future possibilities include:
 
 * Keep db in sync with minutely updates
 * Allow testing to see if a given bounding box has been invalidated by updates since X date
-* Build HTTP end-point to stream PBF directly, skipping disk for outputs
