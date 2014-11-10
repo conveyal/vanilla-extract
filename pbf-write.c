@@ -313,6 +313,7 @@ void pbf_write_node(uint64_t node_id, double lat, double lon, uint8_t *coded_tag
     OSMPBF__Node *node = &(node_block[node_block_count]);
     osmpbf__node__init(node);
     node->id = node_id;
+    // lat and lon are in nanodegrees, and default granularity grid is 100 nanodegrees
     node->lat = (int64_t)(lat * 10000000);
     node->lon = (int64_t)(lon * 10000000);
 
