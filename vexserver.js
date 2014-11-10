@@ -26,7 +26,10 @@ var vex = function (req, res) {
 
   if (isNaN(north) || isNaN(south) || isNaN(east) || isNaN(west)) {
     res.writeHead(400, {'Content-Type': 'text/plain'});
-    res.end('Usage: ?north=<lat>&south=<lat>&east=<lon>&west=<lon>');
+    res.write('Usage: ?north=<lat>&south=<lat>&east=<lon>&west=<lon>\n');
+    res.write('   or: ?n=<lat>&s=<lat>&e=<lon>&w=<lon>\n');
+    res.write('order is not important');
+    res.end();
     return;
   }
 
