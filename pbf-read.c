@@ -83,10 +83,9 @@ static int zinflate(ProtobufCBinaryData *in, unsigned char *out) {
 #define MAX_TAGS 256
 static void handle_primitive_block(OSMPBF__PrimitiveBlock *block, PbfReadCallbacks *callbacks) {
     ProtobufCBinaryData *string_table = block->stringtable->s;
-    int32_t granularity = block->has_granularity ? block->granularity : 1;
+    int32_t granularity = block->has_granularity ? block->granularity : 100;
     int64_t lat_offset = block->has_lat_offset ? block->lat_offset : 0;
     int64_t lon_offset = block->has_lon_offset ? block->lon_offset : 0;
-    if (granularity != 1) die ("Granularity is unsupported.");
     // fprintf(stderr, "pblock with granularity %d and offsets %d, %d\n", granularity, lat_offset, lon_offset);
     // It seems like a block often contains only one group.
     for (int g = 0; g < block->n_primitivegroup; ++g) {
@@ -102,6 +101,8 @@ static void handle_primitive_block(OSMPBF__PrimitiveBlock *block, PbfReadCallbac
         if (callbacks->node) {
             for (int n = 0; n < group->n_nodes; ++n) {
                 OSMPBF__Node *node = group->nodes[n];
+                node->lat = lat_offset + (node->lat * granularity);
+                node->lon = lon_offset + (node->lon * granularity);
                 (*(callbacks->node))(node, string_table);
             }
             if (group->dense) {
@@ -115,13 +116,15 @@ static void handle_primitive_block(OSMPBF__PrimitiveBlock *block, PbfReadCallbac
                 node.n_vals = 0;
                 int kv0 = 0; // index into source keys_values array (concatenated, 0-len separated)
                 int64_t id  = 0;
+                // lat and lon are passed into node callback function in nanodegrees.
+                // offsets are also in nanodegrees.
                 int64_t lat = lat_offset;
                 int64_t lon = lon_offset;
                 for (int n = 0; n < dense->n_id; ++n) {
                     // Coordinates and IDs are delta coded
                     id  += dense->id[n];
-                    lat += dense->lat[n];
-                    lon += dense->lon[n];
+                    lat += dense->lat[n] * granularity;
+                    lon += dense->lon[n] * granularity;
                     node.id  = id;
                     node.lat = lat;
                     node.lon = lon;

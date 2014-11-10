@@ -382,14 +382,14 @@ static uint32_t write_tags (uint32_t *keys, uint32_t *vals, int n, ProtobufCBina
 static long nodes_loaded = 0;
 static long ways_loaded = 0;
 
-/* Node callback handed to the general-purpose PBF loading code. */
+/* Node callback handed to the general-purpose PBF loading code. Lat and lon are in nanodegrees. */
 static void handle_node (OSMPBF__Node *node, ProtobufCBinaryData *string_table) {
     if (node->id > MAX_NODE_ID)
         die("OSM data contains nodes with larger IDs than expected.");
     if (ways_loaded > 0)
         die("All nodes must appear before any ways in input file.");
-    double lat = node->lat * 0.0000001;
-    double lon = node->lon * 0.0000001;
+    double lat = node->lat * 0.000000001;
+    double lon = node->lon * 0.000000001;
     to_coord(&(nodes[node->id].coord), lat, lon);
     TagSubfile *ts = tag_subfile_for_id(node->id, NODE);
     nodes[node->id].tags = write_tags (node->keys, node->vals, node->n_keys, string_table, ts);
