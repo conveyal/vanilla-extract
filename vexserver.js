@@ -60,10 +60,12 @@ var vex = function (req, res) {
     });
 
   // run vex
-  var proc = spawn(cmd, [dbname, south, west, north, east, '-']);
+  // explicitly ignore stderr, because vex writes a lot of data there, and if we don't ignore the pipe gets full
+  // and blocks further vex output.
+  var proc = spawn(cmd, [dbname, south, west, north, east, '-'], {stdio: ['ignore', 'pipe', 'ignore']});
 
   // stream chunks
-  proc.stdout.pipe(res);
+  proc.stdout.pipe(res, {end: true});
 };
 
 // start a server
