@@ -65,9 +65,9 @@ var vex = function (req, res) {
 
   // stream chunks, buffer them in memory
   proc.stdout.on('data', function (data) {
-    // pause the data coming in
-    proc.stdout.pause();
-    res.write(data);
+    // pause the data coming in if we're buffering
+    if (!res.write(data))
+      proc.stdout.pause();
   })
   .on('end', function () {
     res.end();
