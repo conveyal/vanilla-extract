@@ -63,12 +63,7 @@ var vex = function (req, res) {
   var proc = spawn(cmd, [dbname, south, west, north, east, '-']);
 
   // stream chunks, let OS do buffering
-  proc.stdout.on('data', function (data) {
-    res.write(data);
-  })
-  .on('end', function () {
-    res.end();
-  });
+  proc.stdout.pipe(res);
 };
 
 // start a server
