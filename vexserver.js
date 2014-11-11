@@ -67,7 +67,7 @@ var vex = function (req, res) {
   proc.stdout.on('data', function (data) {
     // pause the data coming in
     proc.stdout.pause();
-    res.write(data).done();
+    res.write(data);
   })
   .on('end', function () {
     res.end();
