@@ -10,7 +10,6 @@
 var http = require('http');
 var url = require('url');
 var spawn = require('child_process').spawn;
-var async = require('async');
 
 var dbname = process.env.VEX_DB || '/var/osm/db';
 var port = process.env.VEX_PORT || 8282;
@@ -63,19 +62,8 @@ var vex = function (req, res) {
   // run vex
   var proc = spawn(cmd, [dbname, south, west, north, east, '-']);
 
-  // stream chunks, buffer them in memory
-  proc.stdout.on('data', function (data) {
-    // pause the data coming in if we're buffering
-    if (!res.write(data))
-      proc.stdout.pause();
-  })
-  .on('end', function () {
-    res.end();
-  });
-
-  res.on('drain', function () {
-    proc.stdout.resume();
-  });
+  // stream chunks
+  proc.stdout.pipe(res);
 };
 
 // start a server
