@@ -69,6 +69,5 @@ var vex = function (req, res) {
 };
 
 // start a server
-// PBF extracts can take a long time, but not more than an hour . . .
-http.createServer(vex).listen(port, host).setTimeout(60 * 60 * 1000);
+http.createServer(vex).listen(port, host);
 console.log('vex server running at ' + host + ':' + port);
