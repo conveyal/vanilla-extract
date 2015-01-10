@@ -1,0 +1,257 @@
+#include <math.h>
+#include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <stdbool.h>
+#include <string.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include "pbf.h"
+#include "map.h"
+
+static Map *highway_nodes = NULL;
+static Map *intersection_nodes = NULL;
+static uint32_t n_nodes_total = 0;
+static uint32_t n_highway_nodes = 0;
+static uint32_t n_intersections = 0;
+
+// TERMINOLOGY: For OSM data we say "nodes" and "ways"; 
+// for RRRR routable structures we say "vertex" and "edge".
+
+/* Count the total number of nodes in the PBF for memory allocation purposes. */
+static void count_nodes (OSMPBF__Node *node, ProtobufCBinaryData *string_table) {
+    n_nodes_total++;
+}
+
+/* Returns true if the given way has a highway= tag. */
+static bool is_highway (OSMPBF__Way *way, ProtobufCBinaryData *string_table) {
+    for (int k = 0; k < way->n_keys; k++) {
+        uint32_t key_idx = way->keys[k];
+        if (strncmp("highway", (char*)string_table[key_idx].data, string_table[key_idx].len) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/*
+  We are finding both intersections and ends of ways that are not intersections. 
+  Everything that should be a vertex in a routable graph.
+  This is a callback that operates on persistent intsets -- don't allocate the big intsets in here. 
+*/
+static void find_intersections (OSMPBF__Way *way, ProtobufCBinaryData *string_table) {
+    if ( ! is_highway(way, string_table)) return;
+    int64_t ref = 0;
+    for (int i = 0; i < way->n_refs; i++) {
+        // TODO refs are delta coded. really the shared PBF library should handle decoding.
+        ref += way->refs[i];
+        /* Check if this node is at either end of a way, or has already been seen in another way. */ 
+        if (i == 0 || i == way->n_refs - 1 || Map_contains_key (highway_nodes, ref)) {
+            if ( ! Map_contains_key (intersection_nodes, ref)) {
+                /* As each new intersection is found, assign it an increasing index. */
+                Map_put (intersection_nodes, ref, n_intersections);
+                n_intersections++;
+            }
+        } else {
+            /* This is the first time we are seeing this node. Assign it a zero-based index. */
+            Map_put (highway_nodes, ref, n_highway_nodes);
+            n_highway_nodes++;
+        }
+    }
+}
+
+/* Store the x and y coordinates of all highway nodes (temporarily during load, for building geometries). */
+struct node {
+    int32_t x;
+    int32_t y;
+};
+static struct node *nodes;
+
+/* Track minimum coordinates in case we want to delta-code them. */
+static uint32_t min_x = UINT32_MAX;
+static uint32_t min_y = UINT32_MAX;
+
+/* Vertices are for routing, the intersections or endpoints of OSM ways. */
+struct vertex {
+    int32_t x, y;
+    uint32_t first_edge;
+};
+static struct vertex *vertices;
+
+/* Edges for routing, leading from one vertex to another. */
+struct edge {
+    uint32_t target_vertex;
+    uint16_t length;
+    uint16_t flags;
+};
+static struct edge *edges;
+
+#define M_PER_DEG 1111111.1
+#define DECIMETERS_PER_DEG (M_PER_DEG * 10)
+/* 
+  This should be used after we have already counted the nodes and allocated space for them. 
+  The nodes must be loaded before making edges from ways. However, nodes come before ways in a PBF, 
+  so this can be used in the same callback set with the edge maker.
+*/
+static void load_nodes (OSMPBF__Node *node, ProtobufCBinaryData *string_table) {
+    // Skip all nodes that were not referenced in highway=* ways
+    uint32_t node_index = Map_get (highway_nodes, node->id);
+    if (node_index == VAL_NONE) return;
+    // lat and lon are in nanodegrees, project into decimeters
+    double lat = node->lat * 0.000000001;
+    double lon = node->lon * 0.000000001;
+    double dmy = lat * DECIMETERS_PER_DEG; // TODO use MEAN_EARTH_RADIUS and radians
+    double dmx = lon * cos(lat / 180.0 * M_PI) * DECIMETERS_PER_DEG;
+    if (dmx < min_x) min_x = dmx; 
+    if (dmy < min_y) min_y = dmy; 
+    nodes[node_index].x = dmx;
+    nodes[node_index].y = dmy;
+}
+
+/*
+  We don't know how many outgoing edges each node will have until we scan over the ways. Once we
+  have found the intersection nodes, this function performs an edge creation dry run to see how many
+  edges each vertex will have. Every intersection has a zero-based sequential vertex index number. 
+  The number of edges for each vertex can therefore be stored in a simple array.
+*/
+uint8_t *n_edges_for_vertex = NULL;
+uint32_t n_edges_total = 0;
+static void count_edges (OSMPBF__Way *way, ProtobufCBinaryData *string_table) {
+    if ( ! is_highway(way, string_table)) return;
+    if (way->n_refs < 2) return;
+    int64_t  ref_a = way->refs[0];
+    uint32_t idx_a = Map_get (intersection_nodes, ref_a);
+    int64_t  ref_b = ref_a;
+    uint32_t idx_b = idx_a;
+    if (idx_a == VAL_NONE) return;
+    for (int i = 1; i < way->n_refs; i++) {
+        ref_b += way->refs[i]; // de-delta-code TODO do this in the reader library
+        idx_b = Map_get (intersection_nodes, ref_b);
+        if (idx_b != VAL_NONE) {
+            n_edges_for_vertex[idx_a]++; // forward on street
+            n_edges_for_vertex[idx_b]++; // backward on street
+            n_edges_total += 2;
+            ref_a = ref_b;
+            idx_a = idx_b;
+        }
+    }
+}
+
+/* Allocate the arrays of vertices and edges, then set aside enough space for each vertex's edge list. */
+static void init_vertex_edge_lists () {
+    vertices = calloc (n_intersections + 1, sizeof (struct vertex)); // extra vertex for sentinel
+    edges = calloc (n_edges_total, sizeof (struct edge));  
+    uint32_t next_edge_index = 0;
+    for (int v = 0; v < n_intersections; v++) {
+        vertices[v].first_edge = next_edge_index;
+        next_edge_index += n_edges_for_vertex[v];
+    }       
+}
+
+/* 
+  Make a single edge from vertex index a to b. Assumes that the storage space is already allocated 
+  and zeroed for all edge lists, and that each vertex points to the beginning of its edge list.
+*/
+static void make_edge (uint32_t vertex_index_a, uint32_t vertex_index_b) {
+    struct edge *edge = edges + vertices[vertex_index_a].first_edge;
+    while (edge->flags != 0) edge++; // step pointer forward to an unused edge slot
+    edge->target_vertex = vertex_index_b;
+    edge->length = 1;
+    edge->flags = 1;
+}
+
+/*
+  Only call after counting edges and allocating memory for both vertices and edges.
+*/
+static void make_edges (OSMPBF__Way *way, ProtobufCBinaryData *string_table) {
+    if ( ! is_highway(way, string_table)) return;
+    if (way->n_refs < 2) return;
+    int64_t  ref_a = way->refs[0];
+    uint32_t idx_a = Map_get (intersection_nodes, ref_a);
+    int64_t  ref_b = ref_a;
+    uint32_t idx_b = idx_a;
+    if (idx_a == VAL_NONE) return;
+    for (int i = 1; i < way->n_refs; i++) {
+        ref_b += way->refs[i]; // de-delta-code TODO do this in the reader library
+        idx_b = Map_get (intersection_nodes, ref_b);
+        if (idx_b != VAL_NONE) {
+            make_edge (idx_a, idx_b); // this should actually pass indexes within way to allow making intermediate geom
+            make_edge (idx_b, idx_a);
+            ref_a = ref_b;
+            idx_a = idx_b;
+        }
+    }
+}
+
+int main (int argc, const char *argv[]) {
+
+    if (argc != 2) return EXIT_FAILURE;
+    const char *filename = argv[1];
+    printf ("Loading file %s\n", filename);
+
+    printf ("Counting all nodes and finding offset for ways in PBF...\n");
+    PbfReadCallbacks callbacks;
+    callbacks.node = &count_nodes; 
+    callbacks.way = NULL;
+    callbacks.relation = NULL;
+    pbf_read (filename, &callbacks);
+
+    printf ("\nFinding highway nodes and intersections...\n");
+    highway_nodes = Map_new (n_nodes_total);
+    intersection_nodes = Map_new (n_nodes_total / 2);
+    callbacks.node = NULL;
+    callbacks.way = &find_intersections;
+    callbacks.relation = NULL;
+    pbf_read (filename, &callbacks);
+    printf ("%d nodes total\n", n_nodes_total);
+    printf ("%d nodes in highway=* ways\n", n_highway_nodes);
+    printf ("%d of which were intersections\n", n_intersections);
+    // Map_print (intersection_nodes);
+    
+    printf ("\nLoading node coordinates and counting edges...\n");
+    nodes = calloc (n_highway_nodes, sizeof (struct node));
+    n_edges_for_vertex = calloc (n_intersections, sizeof (uint8_t));
+    callbacks.node = &load_nodes;
+    callbacks.way = &count_edges;
+    callbacks.relation = NULL;
+    pbf_read (filename, &callbacks);
+    printf ("Total number of highway edges is %d.\n", n_edges_total);
+    init_vertex_edge_lists();
+    
+    printf ("\nMaking edges...\n");
+    callbacks.node = NULL;
+    callbacks.way = &make_edges;
+    callbacks.relation = NULL;
+    pbf_read (filename, &callbacks);
+    
+    /* Cleanup */
+    Map_destroy (&highway_nodes);
+    Map_destroy (&intersection_nodes); 
+    free (nodes);
+    free (n_edges_for_vertex);
+    free (vertices);
+    free (edges);
+    return EXIT_SUCCESS;
+
+}
+
+/*
+1.6 M intersections
+4.6 M edges
+
+99680388 nodes total
+4M nodes in highway=*
+1.6M intersections
+
+
+vertexes are referred to by byte offset; they contain their own edges embedded.
+vertex {
+   8 int32_t x, y
+   edges {
+       1 uint8_t flags
+       1 uint8_t length
+       4 uint32_t target_vertex_offset; (could be delta and variable-width coded, lower average length)
+   }
+}
+*/
