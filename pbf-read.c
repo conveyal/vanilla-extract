@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <limits.h>
 #include <arpa/inet.h>
+#include <stdbool.h>
 #include "zlib.h"
 
 // sudo apt-get install protobuf-c-compiler libprotobuf-c0-dev zlib1g-dev
@@ -25,6 +26,12 @@ static void die(const char *msg) {
     fprintf(stderr, "%s\n", msg);
     exit(EXIT_FAILURE);
 }
+
+/* Sequential states used to enforce ordering of elements in a PBF and bail out early if possible. */
+#define PHASE_NODE 0
+#define PHASE_WAY 1
+#define PHASE_RELATION 2
+static int phase;
 
 static void *map;
 static size_t map_size;
@@ -79,9 +86,56 @@ static int zinflate(ProtobufCBinaryData *in, unsigned char *out) {
 
 }
 
+/* 
+  Enforce (node, way, relation) ordering, and bail out early when possible. 
+  Returns true if loading should terminate due to incorrect ordering or just to save time.
+*/
+static bool enforce_ordering (OSMPBF__PrimitiveGroup *group, PbfReadCallbacks *callbacks) {
+    int n_element_types = 0;
+    int element_type = -1;
+    if (group->dense || group->n_nodes > 0) {
+        n_element_types += 1;
+        element_type = PHASE_NODE;
+    }
+    if (group->n_ways > 0) {
+        n_element_types += 1;
+        element_type = PHASE_WAY;
+    }
+    if (group->n_relations > 0) {
+        n_element_types += 1;
+        element_type = PHASE_RELATION;
+    }
+    if (n_element_types > 1) {
+        printf ("ERROR: Block should contain only one element type (nodes, ways, or relations).\n");
+        return true;
+    }
+    if (element_type < phase) {
+        printf ("ERROR: PBF blocks did not follow the order nodes, ways, relations.\n");
+        return true;
+    }
+    if (element_type > phase) {
+        phase = element_type;
+        if (phase == PHASE_NODE && 
+            callbacks->node == NULL && callbacks->way == NULL && callbacks->relation == NULL) {
+            printf ("Skipping the rest of the PBF file, no callbacks were defined.\n");
+            return true;
+        } 
+        if (phase == PHASE_WAY && callbacks->way == NULL && callbacks->relation == NULL) {
+            printf ("Skipping the rest of the PBF file, only a way callback was defined.\n");
+            return true;
+        } 
+        if (phase == PHASE_RELATION && callbacks->relation == NULL) {
+            printf ("Skipping the end of the PBF file, no relation callback is defined.\n");
+            return true;
+        } 
+    }
+    /* Phase stayed the same or advanced without triggering an early exit. */
+    return false;
+}
+
 /* Tags are stored in a string table at the PrimitiveBlock level. */
 #define MAX_TAGS 256
-static void handle_primitive_block(OSMPBF__PrimitiveBlock *block, PbfReadCallbacks *callbacks) {
+static bool handle_primitive_block(OSMPBF__PrimitiveBlock *block, PbfReadCallbacks *callbacks) {
     ProtobufCBinaryData *string_table = block->stringtable->s;
     int32_t granularity = block->has_granularity ? block->granularity : 100;
     int64_t lat_offset = block->has_lat_offset ? block->lat_offset : 0;
@@ -90,6 +144,9 @@ static void handle_primitive_block(OSMPBF__PrimitiveBlock *block, PbfReadCallbac
     // It seems like a block often contains only one group.
     for (int g = 0; g < block->n_primitivegroup; ++g) {
         OSMPBF__PrimitiveGroup *group = block->primitivegroup[g];
+        if (enforce_ordering (group, callbacks)) {
+            return true; // signal early exit due to improper ordering or callbacks were exhausted
+        }
         // fprintf(stderr, "pgroup with %d nodes, %d dense nodes, %d ways, %d relations\n",  group->n_nodes,
         //     group->dense ? group->dense->n_id : 0, group->n_ways, group->n_relations);
         if (callbacks->way) {
@@ -158,15 +215,22 @@ static void handle_primitive_block(OSMPBF__PrimitiveBlock *block, PbfReadCallbac
             }
         }
     }
+    return false; // signal not to break iteration, loading should continue
 }
+
+// TODO break out open, read, and close into separate functions
+// TODO store PBF file offsets to each entity type when they are found, allowing repeated calls
+// TODO pbf_read_nodes, pbf_read_ways, pbf_read_relations convenience functions
 
 /* Externally visible function. */
 void pbf_read (const char *filename, PbfReadCallbacks *callbacks) {
     pbf_map(filename);
     OSMPBF__HeaderBlock *header = NULL;
     int blobcount = 0;
+    phase = PHASE_NODE;
+    bool break_iteration = false;
     for (void *buf = map; buf < map + map_size; ++blobcount) {
-        if (blobcount % 10000 == 0) {
+        if (blobcount % 1000 == 0) {
             fprintf(stderr, "Loading PBF blob %dk (position %ldMB)\n", blobcount/1000, (buf - map) / 1024 / 1024);
         }
         /* read blob header */
@@ -217,17 +281,19 @@ void pbf_read (const char *filename, PbfReadCallbacks *callbacks) {
             fprintf(stderr, "skipping unrecognized blob type\n");
             goto free_blob;
         }
+        
         OSMPBF__PrimitiveBlock *block;
         block = osmpbf__primitive_block__unpack(NULL, bsize, bdata);
         if (block == NULL)
             die("error unpacking primitive block");
-        handle_primitive_block(block, callbacks);
+        break_iteration = handle_primitive_block(block, callbacks);
         osmpbf__primitive_block__free_unpacked(block, NULL);
 
         /* post-iteration cleanup */
         free_blob:
         osmpbf__blob_header__free_unpacked(blobh, NULL);
         osmpbf__blob__free_unpacked(blob, NULL);
+        if (break_iteration) break;
     }
     osmpbf__header_block__free_unpacked(header, NULL);
     pbf_unmap();
