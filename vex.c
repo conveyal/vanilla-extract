@@ -298,7 +298,7 @@ static TagSubfile tag_subfiles[MAX_SUBFILES] = {[0 ... MAX_SUBFILES - 1] {.data=
 /*
   The ID space must be split up.
   Most tags are on ways. There are about 10 times as many nodes as ways, and 100 times less
-  relations than so we divide way IDs and multiply relation IDs to spread them evenly across
+  relations than [ways?] so we divide way IDs and multiply relation IDs to spread them evenly across
   the range of way IDs.
 */
 static uint32_t subfile_index_for_id (int64_t osmid, int entity_type) {
