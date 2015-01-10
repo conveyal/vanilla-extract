@@ -75,7 +75,11 @@ static double get_lon (coord_t *coord) {
     return ((double) coord->x) * 180 / INT32_MAX;
 }
 
-/* A block of way references. Chained together to record which ways begin in each grid cell. */
+/* 
+  A block of way references. Chained together to record which ways begin in each grid cell. 
+  Note that way references can still be stored in 32 bit integers since there are not as many of 
+  them as there are nodes.
+*/
 typedef struct {
     int32_t refs[WAY_BLOCK_SIZE];
     uint32_t next; // index of next way block, or number of free slots if negative
@@ -101,6 +105,15 @@ typedef struct {
     uint32_t node_ref_offset; // the index of the first node in this way's node list
     uint32_t tags; // byte offset into the packed tags array where this node's tag list begins
 } Way;
+
+/*
+  A single OSM relation. Like nodes, relation IDs are assigned sequentially, so a zero-indexed array 
+  of these serves as a map from relation IDs to relations.
+*/
+typedef struct {
+    uint32_t relation_member_offset; // the index of the first member in this relation's member list
+    uint32_t tags; // byte offset into the packed tags array where this relation's tag list begins
+} Relation;
 
 /*
   The spatial index grid. A node's grid bin is determined by right-shifting its coordinates.
