@@ -106,26 +106,26 @@ static bool enforce_ordering (OSMPBF__PrimitiveGroup *group, PbfReadCallbacks *c
         element_type = PHASE_RELATION;
     }
     if (n_element_types > 1) {
-        printf ("ERROR: Block should contain only one element type (nodes, ways, or relations).\n");
+        fprintf (stderr, "ERROR: Block should contain only one element type (nodes, ways, or relations).\n");
         return true;
     }
     if (element_type < phase) {
-        printf ("ERROR: PBF blocks did not follow the order nodes, ways, relations.\n");
+        fprintf (stderr, "ERROR: PBF blocks did not follow the order nodes, ways, relations.\n");
         return true;
     }
     if (element_type > phase) {
         phase = element_type;
         if (phase == PHASE_NODE && 
             callbacks->node == NULL && callbacks->way == NULL && callbacks->relation == NULL) {
-            printf ("Skipping the rest of the PBF file, no callbacks were defined.\n");
+            fprintf (stderr, "Skipping the rest of the PBF file, no callbacks were defined.\n");
             return true;
         } 
         if (phase == PHASE_WAY && callbacks->way == NULL && callbacks->relation == NULL) {
-            printf ("Skipping the rest of the PBF file, only a way callback was defined.\n");
+            fprintf (stderr, "Skipping the rest of the PBF file, only a way callback was defined.\n");
             return true;
         } 
         if (phase == PHASE_RELATION && callbacks->relation == NULL) {
-            printf ("Skipping the end of the PBF file, no relation callback is defined.\n");
+            fprintf (stderr, "Skipping the end of the PBF file, no relation callback is defined.\n");
             return true;
         } 
     }
@@ -197,7 +197,7 @@ static bool handle_primitive_block(OSMPBF__PrimitiveBlock *block, PbfReadCallbac
                                 kv1++;
                             } else {
                                 kv0 += 2; // skip both key and value
-                                printf ("skipping tags after number %d.\n", MAX_TAGS);
+                                fprintf (stderr, "skipping tags after number %d.\n", MAX_TAGS);
                             }
                         }
                     }
