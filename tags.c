@@ -287,3 +287,42 @@ size_t decode_tag (char *buf, KeyVal *kv) {
     // fputc ('\n', stdout);
     return n_decoded;
 }
+
+/* We also include relation role encoding here because the logic is so similar. */
+
+/* These are the most common roles in the Northeast United States according to our tagstats script. */
+char *relation_roles[] = {
+    "forward",
+    "outer",
+    "inner",
+    "from",
+    "to",
+    "via",
+    "south",
+    "platform",
+    "west",
+    "east",
+    "north",
+    "stop",
+    "backward",
+    "label",
+    "link",
+    "subarea",
+    "device",
+    NULL // list terminator
+};
+
+uint8_t encode_role (ProtobufCBinaryData role) {
+    uint8_t code = 1;
+    for (char **s = &(relation_roles[0]); *s != NULL; s++, code++) {
+        if (memcmp(*s, role.data, role.len) == 0) { // Found role string
+            return code;
+        }
+    }
+    return 0; // No code found for this role
+}
+
+char *decode_role (uint8_t code) {
+    return relation_roles[code];
+}
+
