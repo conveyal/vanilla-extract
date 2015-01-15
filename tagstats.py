@@ -31,10 +31,13 @@ def dump_tags(tags):
 class TagCounter(object):
     way_tags = {}
     node_tags = {}
+    rel_tags = {}
     key_weights = {}
+    role_weights = {}
     n_nodes = 0
     n_ways = 0
-
+    n_relations = 0
+    
     def count_tags(self, target, tags):
         for tag in tags.iteritems():
             key, value = tag
@@ -62,8 +65,20 @@ class TagCounter(object):
                 print "%d nodes" % self.n_nodes
             self.count_tags(self.node_tags, tags)            
 
+    def relations(self, relations):
+        for osmid, tags, members in relations:
+            self.n_relations += 1
+            if (self.n_relations % 1000 == 0):
+                print "%d relations" % self.n_relations
+            for ref, element_type, role in members:
+                if role not in self.role_weights:
+                    self.role_weights[role] = 0
+                self.role_weights[role] += 1
+            self.count_tags(self.rel_tags, tags)            
+
 tc = TagCounter()
-p = OSMParser(concurrency=4, ways_callback=tc.ways, nodes_callback=tc.nodes)
+p = OSMParser(concurrency=1, ways_callback=tc.ways, nodes_callback=tc.nodes, relations_callback=tc.relations)
+#p = OSMParser(concurrency=1, relations_callback=tc.relations)
 p.parse(sys.argv[1])
 
 print "KEY WEIGHTS"
@@ -78,4 +93,9 @@ dump_tags(tc.way_tags)
 print "AVOID"
 print skip_keys
 
+role_counts = tc.role_weights.items()
+role_counts.sort(key=lambda x: x[1], reverse=True)
+for role, count in role_counts :
+    print role, count
+    
 
