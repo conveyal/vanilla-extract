@@ -292,6 +292,7 @@ size_t decode_tag (char *buf, KeyVal *kv) {
 
 /* These are the most common roles in the Northeast United States according to our tagstats script. */
 char *relation_roles[] = {
+    "[OTHER]", // zero is used for all unrecognized roles
     "forward",
     "outer",
     "inner",
@@ -309,14 +310,16 @@ char *relation_roles[] = {
     "link",
     "subarea",
     "device",
-    NULL // list terminator
+    "intersection",
+    "sign",
+    NULL // list terminator, max allowed array length is 256
 };
 
 uint8_t encode_role (ProtobufCBinaryData role) {
-    uint8_t code = 1;
-    for (char **s = &(relation_roles[0]); *s != NULL; s++, code++) {
-        if (memcmp(*s, role.data, role.len) == 0) { // Found role string
-            return code;
+    /* Start at 1 because zero signifies "other role". */
+    for (uint8_t code = 1; relation_roles[code] != NULL; code++) {
+        if (memcmp(relation_roles[code], role.data, role.len) == 0) {
+            return code; // Found role string, return its index
         }
     }
     return 0; // No code found for this role

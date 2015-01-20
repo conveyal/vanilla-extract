@@ -101,20 +101,27 @@ static void write_one_blob (uint8_t *payload, uint64_t payload_len, char *type, 
 
 /* Blocks of PBF Node and Way structs for creating primitive blocks. */
 #define PBF_BLOCK_SIZE 8000
-static OSMPBF__Node node_block[PBF_BLOCK_SIZE];
-static OSMPBF__Node *node_block_p[PBF_BLOCK_SIZE];
-static OSMPBF__Way way_block[PBF_BLOCK_SIZE];
-static OSMPBF__Way *way_block_p[PBF_BLOCK_SIZE];
-static uint32_t node_block_count; // number of nodes now stored in block
-static uint32_t way_block_count; // number of ways now stored in block
+static OSMPBF__Node      node_block   [PBF_BLOCK_SIZE];
+static OSMPBF__Node     *node_block_p [PBF_BLOCK_SIZE];
+static OSMPBF__Way       way_block    [PBF_BLOCK_SIZE];
+static OSMPBF__Way      *way_block_p  [PBF_BLOCK_SIZE];
+static OSMPBF__Relation  rel_block    [PBF_BLOCK_SIZE];
+static OSMPBF__Relation *rel_block_p  [PBF_BLOCK_SIZE];
+
+/* Number of nodes/ways/relations now stored in each block. */
+static uint32_t node_block_count;
+static uint32_t way_block_count;
+static uint32_t rel_block_count;
 
 /* protobuf-c API takes arrays of pointers to structs. Initialize those arrays once at startup. */
 static void initialize_pointer_arrays() {
-    OSMPBF__Way  *wp = &(way_block[0]);
-    OSMPBF__Node *np = &(node_block[0]);
+    OSMPBF__Way      *wp = &(way_block[0]);
+    OSMPBF__Node     *np = &(node_block[0]);
+    OSMPBF__Relation *rp = &(rel_block[0]);
     for (int i = 0; i < PBF_BLOCK_SIZE; i++) {
         way_block_p[i]  = wp++;
         node_block_p[i] = np++;
+        rel_block_p[i]  = rp++;
     }
     node_block_count = 0;
     way_block_count = 0;
@@ -128,9 +135,21 @@ static void reset_node_block() {
 /* Free all dynamically allocated node reference arrays, and reset the block length to zero. */
 static void reset_way_block() {
     for (int w = 0; w < node_block_count; w++) {
-        free(way_block[w].refs); // allocated in write_pbf_way
+        // per-way references array dynamically allocated in pbf_write_way
+        free(way_block[w].refs); 
     }
     way_block_count = 0;
+}
+
+/* Free all dynamically allocated relation member arrays, and reset the block length to zero. */
+static void reset_rel_block () {
+    for (int r = 0; r < rel_block_count; r++) {
+        // These per-relation arrays are all dynamically allocated in pbf_write_relation
+        free (rel_block[r].roles_sid);
+        free (rel_block[r].memids);
+        free (rel_block[r].types);
+    }
+    rel_block_count = 0;
 }
 
 /* An array of string table indexes to store all the keys and vals in a block. */
@@ -138,7 +157,7 @@ static void reset_way_block() {
 static uint32_t kv_buff[MAX_KEYS_VALS];
 static size_t kv_n = 0;
 
-/* Allocate a chunk of n string pointers for tag keys or values. */
+/* Allocate a chunk of n string pointers for tag keys or values. A suballocator, in fact. */
 static uint32_t *kv_alloc(size_t n) {
     if (kv_n + n > MAX_KEYS_VALS) {
         fprintf(stderr, "too many key/val string table references in a block.\n");
@@ -165,14 +184,15 @@ static void write_pbf_header_blob () {
     char* features[2] = {"OsmSchema-V0.6", "DenseNodes"};
     hblock.required_features = features;
     hblock.n_required_features = 2;
-    hblock.writingprogram = "RRRR_COSM";
+    hblock.writingprogram = "VEX";
     size_t payload_len = osmpbf__header_block__pack(&hblock, payload_buffer);
     write_one_blob (payload_buffer, payload_len, "OSMHeader", out);
 
 }
 
-/* Write one data blob containing any buffered ways or nodes. */
-static void write_pbf_data_blob (bool nodes, bool ways) {
+/* Write one data blob containing any buffered ways, nodes, or relations. */
+// TODO make entity types mutually exclusive (write only one type per block) so enum rather than bool
+static void write_pbf_data_blob (bool nodes, bool ways, bool rels) {
 
     OSMPBF__PrimitiveBlock pblock;
     osmpbf__primitive_block__init(&pblock);
@@ -197,6 +217,11 @@ static void write_pbf_data_blob (bool nodes, bool ways) {
         pgroup.ways = way_block_p;
         pgroup.n_ways = way_block_count;
     }
+    if (rels && rel_block_count > 0) {
+        fprintf(stderr, "Writing data blob containing relations.\n");
+        pgroup.relations = rel_block_p;
+        pgroup.n_relations = rel_block_count;
+    }
 
     size_t payload_len = osmpbf__primitive_block__pack(&pblock, payload_buffer);
     write_one_blob (payload_buffer, payload_len, "OSMData", out);
@@ -206,8 +231,10 @@ static void write_pbf_data_blob (bool nodes, bool ways) {
     Dedup_clear(); // restart a new string table for each blob
     if (nodes) reset_node_block();
     if (ways) reset_way_block();
-    kv_free_all(); // FIXME this is freeing the kv table even when only one of nodes/ways has been written...
-
+    if (rels) reset_rel_block();
+    kv_free_all(); 
+    // FIXME this is freeing the kv table even when only one of nodes/ways has been written...
+    // We should force one entity type per block throughout vex.
 }
 
 // TODO a function that gets a pointer to the next available way struct (avoid copying)
@@ -223,7 +250,9 @@ static size_t load_tags(uint8_t *coded_tags, /*OUT*/ uint32_t **keys, /*OUT*/ ui
         KeyVal kv;
         t += decode_tag(t, &kv);
         n_tags++;
-    } // FIXME there should be a simpler "count tags" function, or we should prefix the list with a varint length.
+    } 
+    // FIXME there should be a simpler "count tags" function, 
+    // or we should prefix the list with a varint length.
 
     /* Then copy string table indexes of keys and values into a subsection of the kv buffer. */
     uint32_t *kbuf = kv_alloc(n_tags);
@@ -256,14 +285,14 @@ void pbf_write_begin (FILE *out_file) {
 
 /* PUBLIC Write out a block for any objects remaining in the buffer. Call at the end of output. */
 void pbf_write_flush() {
-    if (node_block_count > 0 || way_block_count > 0) {
-        write_pbf_data_blob(true, true);
+    if (node_block_count > 0 || way_block_count > 0 || rel_block_count > 0) {
+        write_pbf_data_blob (true, true, true);
     }
 }
 
 
 /* PUBLIC Write one way in a buffered fashion, writing out a blob as needed (every 8k objects). */
-void pbf_write_way(uint64_t way_id, int64_t *refs, uint8_t *coded_tags) {
+void pbf_write_way (int64_t way_id, int64_t *refs, uint8_t *coded_tags) {
 
     /*
       We must copy the refs list, and cannot use it directly:
@@ -301,14 +330,14 @@ void pbf_write_way(uint64_t way_id, int64_t *refs, uint8_t *coded_tags) {
     /* Write out a block if we've filled the buffer. */
     way_block_count++;
     if (way_block_count == PBF_BLOCK_SIZE) {
-        write_pbf_data_blob(false, true);
+        write_pbf_data_blob(false, true, false);
     }
 
 }
 
 
 /* PUBLIC Write one node in a buffered fashion, writing out a blob as needed (every 8k objects). */
-void pbf_write_node(uint64_t node_id, double lat, double lon, uint8_t *coded_tags) {
+void pbf_write_node (int64_t node_id, double lat, double lon, uint8_t *coded_tags) {
 
     OSMPBF__Node *node = &(node_block[node_block_count]);
     osmpbf__node__init(node);
@@ -324,7 +353,62 @@ void pbf_write_node(uint64_t node_id, double lat, double lon, uint8_t *coded_tag
     /* Write out a block if we've filled the buffer. */
     node_block_count++;
     if (node_block_count == PBF_BLOCK_SIZE) {
-        write_pbf_data_blob(true, false);
+        write_pbf_data_blob (true, false, false);
     }
 
 }
+
+/* PUBLIC Write one relation in a buffered fashion, writing one blob as needed (8k objects). */
+void pbf_write_relation (int64_t rel_id, RelMember *members, uint8_t *coded_tags) {
+
+    /* Count the number of members in this relation, assuming there is at least one. */
+    size_t n_members = 1;
+    for (RelMember *m = members; m->id >= 0; m++) {
+        n_members++;
+    }
+
+    /* Copy the relation members into parallel arrays (dynamically allocated) for Protobuf-c. */
+    // TODO TODO deallocated in reset_rel_block
+    int64_t *memid_buf = malloc(n_members * sizeof(int64_t)); 
+    int32_t *roles_sid_buf = malloc(n_members * sizeof(int32_t));
+    OSMPBF__Relation__MemberType *types_buf 
+        = malloc(n_members * sizeof(OSMPBF__Relation__MemberType));
+    if (memid_buf == NULL || types_buf == NULL || roles_sid_buf == NULL) exit (-1);
+    int64_t last_id = 0; // Member IDs are delta-coded within relations
+    for (int i = 0; i < n_members; i++) {
+        RelMember *m = &(members[i]);
+        int64_t id = m->id;
+        // Negative member id marks the last member in the list
+        if (id < 0) id = -id;
+        // Member IDs within a relation are delta coded in PBF output
+        memid_buf[i] = id - last_id; 
+        last_id = id;
+        roles_sid_buf[i] = Dedup_dedup (decode_role (m->role));
+        types_buf[i] = m->element_type;
+    }
+
+    /* Grab an unused OSMPBF Relation struct from the block. */
+    OSMPBF__Relation *rel = &(rel_block[rel_block_count]);
+    osmpbf__relation__init (rel);
+
+    /* The parallel member arrays in the OSMPBF relation struct are all the same length. */
+    rel->n_memids = rel->n_types = rel->n_roles_sid = n_members;
+    rel->id = rel_id;
+    rel->memids = memid_buf;
+    rel->types = types_buf;
+    rel->roles_sid = roles_sid_buf;
+    
+    /* Decode the tags for this relation into Protobuf-c parallel arrays. */
+    size_t n_tags = load_tags (coded_tags, &(rel->keys), &(rel->vals));
+    rel->n_keys = n_tags;
+    rel->n_vals = n_tags;
+
+    /* Write out a block if we've filled the buffer. */
+    rel_block_count++;
+    if (rel_block_count == PBF_BLOCK_SIZE) {
+        write_pbf_data_blob (false, false, true);
+    }
+    
+} 
+
+

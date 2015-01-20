@@ -28,14 +28,18 @@
 /*
   https://taginfo.openstreetmap.org/reports/database_statistics
   There are over 10 times as many nodes as ways in OSM.
-  Assume there are as many active node references as there are active and deleted nodes.
 */
 #define MAX_NODE_ID   4000000000
 #define MAX_WAY_ID     400000000
-#define MAX_NODE_REFS 4000000000
+#define MAX_REL_MEMBERS 40000000
+#define MAX_REL_ID       4000000
+
+/* Assume there are as many active node references as there are active and deleted nodes. */
+#define MAX_NODE_REFS MAX_NODE_ID
 
 /* Way reference block size is based on the typical number of ways per grid cell. */
 #define WAY_BLOCK_SIZE 32
+
 /* Assume one-fifth as many blocks as cells in the grid. Observed number is ~15000000 blocks. */
 #define MAX_WAY_BLOCKS (GRID_DIM * GRID_DIM / 5)
 
@@ -108,21 +112,31 @@ typedef struct {
 
 /*
   A single OSM relation. Like nodes, relation IDs are assigned sequentially, so a zero-indexed array 
-  of these serves as a map from relation IDs to relations.
+  of these serves as a map from relation IDs to relations. OSM is just over 2^31 entities now, so
+  even if every node was in a relation we could still index them all relation members with a uint32.
 */
 typedef struct {
-    uint32_t relation_member_offset; // the index of the first member in this relation's member list
+    uint32_t member_offset; // the index of the first member in this relation's member list
     uint32_t tags; // byte offset into the packed tags array where this relation's tag list begins
+    uint32_t next; // the index of the next relation in this grid cell
 } Relation;
+
+/* Indexes for the first block of nodes and the first relation in each grid cell. */
+typedef struct {
+    uint32_t head_way_block;
+    uint32_t head_relation;
+} GridCell;
 
 /*
   The spatial index grid. A node's grid bin is determined by right-shifting its coordinates.
   Initially this was a multi-level grid, but it turns out to work fine as a single level.
   Rather than being directly composed of way reference blocks, there is a level of indirection
-  because the grid is mostly empty due to ocean and wilderness. TODO eliminate coastlines etc.
+  because the grid is mostly empty due to ocean and wilderness. 
+  TODO eliminate coastlines etc.
+  TODO struct is no longer necessary because this is not a compound type.
 */
 typedef struct {
-    uint32_t cells[GRID_DIM][GRID_DIM]; // contains indexes to way_blocks
+    GridCell cells[GRID_DIM][GRID_DIM]; // contains indexes to way_blocks and relations
 } Grid;
 
 /* File descriptor for the lockfile. */
@@ -231,13 +245,17 @@ FILE *open_output_file(const char *name, uint8_t subfile) {
 }
 
 /* Arrays of memory-mapped structs. This is where we store the bulk of our data. */
-Grid     *grid;
-Node     *nodes;
-Way      *ways;
-WayBlock *way_blocks;
-int64_t  *node_refs;  // A negative node_ref marks the end of a list of refs.
-uint32_t n_node_refs; // The number of node refs currently used.
+Grid      *grid;
+Node      *nodes;
+Way       *ways;
+WayBlock  *way_blocks;
+Relation  *relations;
+RelMember *rel_members;
+int64_t   *node_refs;        // A negative node_ref marks the end of a list of refs.
+uint32_t  n_rel_members = 1; // The number of relation members currently used. start at 1 since zero marks the end of lists.
+uint32_t  n_node_refs = 0;   // The number of node refs currently used.
 // FIXME n_node_refs will eventually overflow. The fact that it's unsigned gives us a little slack.
+// FIXME the n_vars were not initialized before?
 
 /*
   The number of way reference blocks currently allocated.
@@ -262,8 +280,25 @@ static uint32_t bin (int32_t xy) {
 }
 
 /* Get the address of the grid cell for the given internal coord. */
-static uint32_t *get_grid_cell(coord_t coord) {
+static GridCell *get_grid_cell_for_coord (coord_t coord) {
     return &(grid->cells[bin(coord.x)][bin(coord.y)]);
+}
+
+/* Return the GridCell containing the first member of the given relation. */
+static GridCell *get_grid_cell_for_relation (Relation *r) {
+    RelMember first_member = rel_members[r->member_offset];
+    if (first_member.element_type == NODE) {
+        return get_grid_cell_for_coord (nodes[first_member.id].coord);
+    } else if (first_member.element_type == WAY) {
+        Way way = ways[first_member.id];
+        Node first_node = nodes[way.node_ref_offset];
+        return get_grid_cell_for_coord (first_node.coord);
+    } else { 
+        // (first_member.element_type == RELATION) {
+        // TODO recurse... but the referenced relation may not be loaded.
+        // so return null and catch this condition in the caller.
+        return NULL;
+    }
 }
 
 /*
@@ -271,19 +306,17 @@ static uint32_t *get_grid_cell(coord_t coord) {
   cell, creating a new way reference block if the grid cell is currently empty.
 */
 static uint32_t get_grid_way_block (Node *node) {
-    uint32_t *cell = get_grid_cell(node->coord);
-    if (*cell == 0) {
-        *cell = new_way_block();
+    GridCell *cell = get_grid_cell_for_coord (node->coord);
+    if (cell->head_way_block == 0) {
+        cell->head_way_block = new_way_block();
     }
-    // fprintf(stderr, "xbin=%d ybin=%d\n", xb, yb);
-    // fprintf(stderr, "index=%d\n", index);
-    return *cell;
+    return cell->head_way_block;
 }
 
-/* TODO make this insert a new block instead of just setting the grid cell contents. */
-static void set_grid_way_block (Node *node, uint32_t wbi) {
-    uint32_t *cell = get_grid_cell(node->coord);
-    *cell = wbi;
+/* TODO make this insert a new block at the list head instead of just setting the grid cell contents. */
+static void set_grid_way_block (Node *node, uint32_t way_block_index) {
+    GridCell *cell = get_grid_cell_for_coord (node->coord);
+    cell->head_way_block = way_block_index;
 }
 
 /* A memory block holding tags for a sub-range of the OSM ID space. */
@@ -394,6 +427,7 @@ static uint32_t write_tags (uint32_t *keys, uint32_t *vals, int n, ProtobufCBina
 /* Count the number of nodes and ways loaded, just for progress reporting. */
 static long nodes_loaded = 0;
 static long ways_loaded = 0;
+static long rels_loaded = 0;
 
 /* Node callback handed to the general-purpose PBF loading code. */
 static void handle_node (OSMPBF__Node *node, ProtobufCBinaryData *string_table) {
@@ -466,15 +500,56 @@ static void handle_way (OSMPBF__Way *way, ProtobufCBinaryData *string_table) {
 }
 
 /*
+  Relation callback handed to the general-purpose PBF loading code.
+  All nodes and ways must come before relations in the input file for this to work.
+  Copies one OSMPBF__Relation into a VEx Relation and inserts it in the grid spatial index.
+*/
+static void handle_relation (OSMPBF__Relation* relation, ProtobufCBinaryData *string_table) {
+    if (relation->n_memids == 0) return; // logic below expects at least one member reference
+    Relation *r = &(relations[relation->id]); // the Vex struct into which we are copying the PBF relation
+    r->member_offset = n_rel_members;
+    RelMember *rm = &(rel_members[n_rel_members]);
+    /* Check to avoid writing past the end of the relation members file. */
+    if (n_rel_members + relation->n_memids >= MAX_REL_MEMBERS) {
+        die ("relation members index is about to exceed its maximum allowed value.");
+    }
+    /* Copy all the relation members from PBF into the VEx array. */
+    int64_t last_id = 0;
+    for (int m = 0; m < relation->n_memids; m++, n_rel_members++, rm++) {
+        rm->role = encode_role(string_table[relation->roles_sid[m]]);
+        /* OSMPBF NODE, WAY, RELATION constants use the same ints as ours. */
+        rm->element_type = relation->types[m];
+        int64_t id = relation->memids[m] + last_id; // delta-decode
+        last_id = id;
+        rm->id = (uint32_t)id; // currently, 2^31 < max osmid < 2^32
+    }
+    (rm - 1)->id *= -1; // Negate the last relation member id to signal the end of the list
+    /* Save tags to compacted tag array, and record the index where this relation's tag list begins. */
+    TagSubfile *ts = tag_subfile_for_id (relation->id, RELATION);
+    r->tags = write_tags (relation->keys, relation->vals, relation->n_keys, string_table, ts);
+    /* Insert this relation at the head of a linked list in its containing spatial index grid cell.
+       The GridCell's head field is initially set to zero since it is in a new mmapped file. */
+    GridCell *grid_cell = get_grid_cell_for_relation (r);
+    r->next = 0; // zero means no next relation in this grid cell (we start real relations at index 1).
+    if (grid_cell != NULL) {
+        r->next = grid_cell->head_relation;
+        grid_cell->head_relation = relation->id;
+    }
+    rels_loaded++;
+    if (rels_loaded % 1000 == 0)
+        fprintf(stderr, "loaded %ldk relations\n", rels_loaded / 1000);
+}
+
+/*
   Used for setting the grid side empirically.
-  With 8 bit (255x255) grid, planet.pbf gives 36.87% full
+  With 8 bit (256x256) grid, planet.pbf gives 36.87% full
   With 14 bit grid: 248351486 empty 20083970 used, 7.48% full
 */
 static void fillFactor () {
     int used = 0;
     for (int i = 0; i < GRID_DIM; ++i) {
         for (int j = 0; j < GRID_DIM; ++j) {
-            if (grid->cells[i][j] != 0) used++;
+            if (grid->cells[i][j].head_way_block != 0) used++;
         }
     }
     fprintf(stderr, "index grid: %d used, %.2f%% full\n",
@@ -527,6 +602,7 @@ static void print_way (int64_t way_id) {
 /*
   Fields and functions for saving compact binary OSM.
   This is comparable in size to PBF if you zlib it in blocks, but much simpler.
+  Q: why does PBF use string tables since a similar result is achieved by zipping the blocks?
 */
 FILE *ofile;
 int32_t last_x, last_y;
@@ -589,11 +665,13 @@ int main (int argc, const char * argv[]) {
     if (lock_fd == -1) die ("Error opening or creating lock file.");
 
     /* Memory-map files for each OSM element type, and for references between them. */
-    grid       = map_file("grid",       0, sizeof(Grid));
-    ways       = map_file("ways",       0, sizeof(Way)      * MAX_WAY_ID);
-    nodes      = map_file("nodes",      0, sizeof(Node)     * MAX_NODE_ID);
-    node_refs  = map_file("node_refs",  0, sizeof(int64_t)  * MAX_NODE_REFS);
-    way_blocks = map_file("way_blocks", 0, sizeof(WayBlock) * MAX_WAY_BLOCKS);
+    grid        = map_file("grid",        0, sizeof(Grid));
+    ways        = map_file("ways",        0, sizeof(Way)       * MAX_WAY_ID);
+    nodes       = map_file("nodes",       0, sizeof(Node)      * MAX_NODE_ID);
+    node_refs   = map_file("node_refs",   0, sizeof(int64_t)   * MAX_NODE_REFS);
+    way_blocks  = map_file("way_blocks",  0, sizeof(WayBlock)  * MAX_WAY_BLOCKS);
+    relations   = map_file("relations",   0, sizeof(Relation)  * MAX_REL_ID);
+    rel_members = map_file("rel_members", 0, sizeof(RelMember) * MAX_REL_MEMBERS);
 
     if (argc == 3) {
         /* LOAD */
@@ -601,7 +679,7 @@ int main (int argc, const char * argv[]) {
         PbfReadCallbacks callbacks = {
             .way  = &handle_way,
             .node = &handle_node,
-            .relation = NULL
+            .relation = &handle_relation
         };
         /* Request an exclusive write lock, blocking while reads complete. */
         fprintf(stderr, "Acquiring exclusive write lock on database.\n");
@@ -610,7 +688,8 @@ int main (int argc, const char * argv[]) {
         fillFactor();
         /* Release exclusive write lock, allowing reads to begin. */
         flock(lock_fd, LOCK_UN);
-        fprintf(stderr, "loaded %ld nodes and %ld ways total.\n", nodes_loaded, ways_loaded);
+        fprintf(stderr, "loaded %ld nodes, %ld ways, and %ld relations total.\n", 
+                nodes_loaded, ways_loaded, rels_loaded);
         return EXIT_SUCCESS;
     } else if (argc == 7) {
         /* QUERY */
@@ -647,11 +726,22 @@ int main (int argc, const char * argv[]) {
 
         pbf_write_begin(pbf_file);
 
-        /* Make two passes, first outputting all nodes, then all ways. */
-        for (int stage = NODE; stage < RELATION; stage++) {
+        /* Make three passes, first outputting all nodes, then all ways, then all relations. */
+        for (int stage = NODE; stage <= RELATION; stage++) {
             for (uint32_t x = min_xbin; x <= max_xbin; x++) {
                 for (uint32_t y = min_ybin; y <= max_ybin; y++) {
-                    uint32_t wbidx = grid->cells[x][y];
+                    if (stage == RELATION) {
+                        uint32_t rel_id = grid->cells[x][y].head_relation;
+                        while (rel_id > 0) {
+                            Relation rel = relations[rel_id];
+                            uint8_t *tags = tag_data_for_id (rel_id, RELATION);
+                            pbf_write_relation (rel_id, &(rel_members[rel.member_offset]), &(tags[rel.tags]));
+                            rel_id = rel.next; // list links within cell are embedded in relations
+                        }
+                        continue; // all the rest of the code in the y loop body is for WAY and NODE
+                    }
+                    /* Following code handles NODE and WAY if RELATION clause was not entered. */
+                    uint32_t wbidx = grid->cells[x][y].head_way_block;
                     // printf ("xbin=%d ybin=%d way bin index %u\n", x, y, wbidx);
                     if (wbidx == 0) continue; // There are no ways in this grid cell.
                     /* Iterate over all ways in this block, and its chained blocks. */
