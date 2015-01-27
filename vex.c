@@ -580,8 +580,12 @@ static void check_lon_range(double lon) {
         die ("Longitude out of range.");
 }
 
-/* Functions beginning with print_ output OSM in a simple structured text format. */
-static void print_tags (uint8_t *tag_data) {
+/* 
+  Functions beginning with print_ output OSM in a simple structured text format.
+  They are not static because they never need to be fast and they are only called when debugging.
+  External visibility will keep the compiler from complaining when they are unused (hack).
+*/
+void print_tags (uint8_t *tag_data) {
     char *t = (char*)tag_data;
     KeyVal kv;
     while (*t != INT8_MAX) {
@@ -590,7 +594,7 @@ static void print_tags (uint8_t *tag_data) {
     }
 }
 
-static void print_node (uint64_t node_id) {
+void print_node (uint64_t node_id) {
     Node node = nodes[node_id];
     fprintf (stderr, "  node %ld (%.6f, %.6f) ", node_id, get_lat(&node.coord), get_lon(&node.coord));
     uint8_t *tag_data = tag_data_for_id (node_id, NODE);
@@ -599,7 +603,7 @@ static void print_node (uint64_t node_id) {
     fprintf (stderr, "\n");
 }
 
-static void print_way (int64_t way_id) {
+void print_way (int64_t way_id) {
     fprintf (stderr, "way %ld ", way_id);
     uint8_t *tag_data = tag_data_for_id (way_id, WAY);
     print_tags (tag_data + ways[way_id].tags);
@@ -611,7 +615,7 @@ static void print_way (int64_t way_id) {
     This is comparable in size to PBF if you zlib it in blocks, but much simpler.
     Q: why does PBF use string tables since a similar result is achieved by zipping the blocks?
     The variables declared here are used to hold shared state for all the write functions.
-    TODO move to another module or namespace these variables with a prefix or a struct.
+    TODO move to another module, or namespace these variables with a prefix or a struct.
 */
 
 int32_t last_x, last_y;
@@ -625,12 +629,6 @@ void vexbin_write_init (FILE *output_file) {
     last_node_id = 0;
     last_way_id = 0;
     ofile = output_file;
-}
-
-/* Clean up after writing to a VEx format OSM file. */
-void vexbin_write_complete () {
-    fclose (ofile);
-    vexbin_write_init (NULL);
 }
 
 /* Write a positive integer to the output file using Protobuf variable width conventions. */
@@ -785,21 +783,31 @@ int main (int argc, const char * argv[]) {
         uint32_t max_xbin = bin(cmax.x);
         uint32_t min_ybin = bin(cmin.y);
         uint32_t max_ybin = bin(cmax.y);
+        bool vexformat = false;
 
         /* Request a shared read lock, blocking while any writes to complete. */
         fprintf(stderr, "Acquiring shared read lock on database.\n");
         flock(lock_fd, LOCK_SH);
 
-        /* Get the output file, or default to out.pbf if not specified */
+        /* Get the output stream, interpreting the dash character as stdout. */
         FILE *pbf_file;
+        if (strcmp(argv[6], "-") == 0) {
+            pbf_file = stdout;
+        } else {
+            pbf_file = open_output_file (argv[6], 0);
+            char *dot = strrchr (argv[6],'.');
+            /* Use a custom binary format when the file extension is .vex */
+            if (dot != NULL && strcmp (dot,".vex") == 0) {
+                vexformat = true;
+                fprintf (stderr, "Output will be in VEx binary format.\n");
+            }
+        }
 
-        if (strcmp(argv[6], "-") == 0)
-          pbf_file = stdout;
-        else
-          pbf_file = open_output_file(argv[6], 0);
-
-//        pbf_write_begin(pbf_file);
-        vexbin_write_init (pbf_file);
+        if (vexformat) {
+            vexbin_write_init (pbf_file);
+        } else {
+            pbf_write_begin(pbf_file);
+        }
         
         /* Make three passes, first outputting all nodes, then all ways, then all relations. */
         for (int stage = NODE; stage <= RELATION; stage++) {
@@ -809,9 +817,13 @@ int main (int argc, const char * argv[]) {
                         uint32_t rel_id = grid->cells[x][y].head_relation;
                         while (rel_id > 0) {
                             Relation rel = relations[rel_id];
-//                            uint8_t *tags = tag_data_for_id (rel_id, RELATION);
-//                            pbf_write_relation (rel_id, &(rel_members[rel.member_offset]), &(tags[rel.tags]));
-                            rel_id = rel.next; // list links within cell are embedded in relations
+                            if (vexformat) {
+                                // TODO NOOP
+                            } else {
+                                uint8_t *tags = tag_data_for_id (rel_id, RELATION);
+                                pbf_write_relation (rel_id, &(rel_members[rel.member_offset]), &(tags[rel.tags]));
+                            }
+                            rel_id = rel.next; // list links within a cell are embedded in relations
                         }
                         continue; // all the rest of the code in the y loop body is for WAY and NODE
                     }
@@ -827,10 +839,13 @@ int main (int argc, const char * argv[]) {
                             if (way_id <= 0) break;
                             Way way = ways[way_id];
                             if (stage == WAY) {
-//                                uint8_t *tags = tag_data_for_id(way_id, WAY);
-//                                pbf_write_way(way_id, &(node_refs[way.node_ref_offset]), &(tags[way.tags]));
-                                print_way (way_id);
-                                vexbin_write_way (way_id);
+                                // print_way (way_id); // DEBUG
+                                if (vexformat) {
+                                    vexbin_write_way (way_id);
+                                } else {
+                                    uint8_t *tags = tag_data_for_id(way_id, WAY);
+                                    pbf_write_way(way_id, &(node_refs[way.node_ref_offset]), &(tags[way.tags]));
+                                }
                             } else if (stage == NODE) {
                                 /* Output all nodes in this way. */
                                 //FIXME Intersection nodes are repeated.
@@ -842,12 +857,15 @@ int main (int argc, const char * argv[]) {
                                         node_id = -node_id;
                                         more = false;
                                     }
-                                    print_node (node_id);
-                                    vexbin_write_node (node_id);
-//                                    Node node = nodes[node_id];
-//                                    uint8_t *tags = tag_data_for_id(node_id, NODE);
-//                                    pbf_write_node(node_id, get_lat(&(node.coord)),
-//                                        get_lon(&(node.coord)), &(tags[node.tags]));
+                                    // print_node (node_id); // DEBUG
+                                    if (vexformat) {
+                                        vexbin_write_node (node_id);
+                                    } else {
+                                        Node node = nodes[node_id];
+                                        uint8_t *tags = tag_data_for_id(node_id, NODE);
+                                        pbf_write_node(node_id, get_lat(&(node.coord)),
+                                            get_lon(&(node.coord)), &(tags[node.tags]));
+                                    }
                                 }
                             }
                         }
@@ -857,7 +875,7 @@ int main (int argc, const char * argv[]) {
                 }
             }
             /* Write out any buffered nodes or ways before beginning the next PBF writing stage. */
-            pbf_write_flush();
+            if (!vexformat) pbf_write_flush();
         }
         fclose(pbf_file);
         flock(lock_fd, LOCK_UN); // release the shared lock, allowing writes to begin.
