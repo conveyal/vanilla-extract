@@ -371,7 +371,7 @@ static void ts_write(ProtobufCBinaryData *bd, TagSubfile *ts) {
     ts->pos += bd->len;
 }
 
-/* Write a ProtobufCBinaryData out to a TagSubfile, updating the subfile position accordingly. */
+/* Write a single char out to a TagSubfile, updating the subfile position accordingly. */
 static void ts_putc(char c, TagSubfile *ts) {
     ts->data[(ts->pos)++] = c;
 }
@@ -576,9 +576,8 @@ static void check_lon_range(double lon) {
 }
 
 /* Functions beginning with print_ output OSM in a simple structured text format. */
-static void print_tags (uint32_t idx) {
-    if (idx == UINT32_MAX) return; // special index indicating no tags
-    char *t = NULL; // &(tags[idx]); // FIXME segment
+static void print_tags (uint8_t *tag_data) {
+    char *t = (char*)tag_data;
     KeyVal kv;
     while (*t != INT8_MAX) {
         t += decode_tag(t, &kv);
@@ -588,15 +587,18 @@ static void print_tags (uint32_t idx) {
 
 static void print_node (uint64_t node_id) {
     Node node = nodes[node_id];
-    fprintf(stderr, "  node %ld (%.6f, %.6f) ", node_id, get_lat(&node.coord), get_lon(&node.coord));
-    print_tags(nodes[node_id].tags);
-    fprintf(stderr, "\n");
+    fprintf (stderr, "  node %ld (%.6f, %.6f) ", node_id, get_lat(&node.coord), get_lon(&node.coord));
+    uint8_t *tag_data = tag_data_for_id (node_id, NODE);
+    fprintf (stderr, "(offset %d)", node.tags);
+    print_tags (tag_data + node.tags);
+    fprintf (stderr, "\n");
 }
 
 static void print_way (int64_t way_id) {
-    fprintf(stderr, "way %ld ", way_id);
-    print_tags(ways[way_id].tags);
-    fprintf(stderr, "\n");
+    fprintf (stderr, "way %ld ", way_id);
+    uint8_t *tag_data = tag_data_for_id (way_id, WAY);
+    print_tags (tag_data + ways[way_id].tags);
+    fprintf (stderr, "\n");
 }
 
 /* 
@@ -663,25 +665,23 @@ static void vexbin_write_string (char *string) {
   The length of this list is output first as a variable-width integer.
   The subsequent data compression pass should tokenize any frequently occurring tags.
 */
-static void vexbin_write_tags (uint32_t idx) {
+static void vexbin_write_tags (uint8_t *tag_data) {
     KeyVal kv; // stores the output of the tag decoder function
-    if (idx != UINT32_MAX) {
-        char *t0 = NULL; //&(tags[idx]); // FIXME segment
-        char *t = t0;
-        int ntags = 0;
-        /* First count the number of tags and write out that number. */
-        while (*t != INT8_MAX) {
-            t += decode_tag (t, &kv);
-            ntags += 1;
-        }
-        vexbin_write_length (ntags);
-        /* Then reset to the beginning of the list and actually write out the tags. */
-        t = t0;
-        while (*t != INT8_MAX) {
-            t += decode_tag (t, &kv);        
-            vexbin_write_string (kv.key);
-            vexbin_write_string (kv.val);
-        }
+    char *t0 = (char*) tag_data;
+    char *t = t0;
+    int ntags = 0;
+    /* First count the number of tags and write out that number. */
+    while (*t != INT8_MAX) {
+        t += decode_tag (t, &kv);
+        ntags += 1;
+    }
+    vexbin_write_length (ntags);
+    /* Then reset to the beginning of the list and actually write out the tags. */
+    t = t0;
+    while (*t != INT8_MAX) {
+        t += decode_tag (t, &kv);        
+        vexbin_write_string (kv.key);
+        vexbin_write_string (kv.val);
     }
 }
 
@@ -694,7 +694,8 @@ static void vexbin_write_node (int64_t node_id) {
     vexbin_write_signed (id_delta);
     vexbin_write_signed (x_delta);
     vexbin_write_signed (y_delta);
-    vexbin_write_tags (node.tags);
+    uint8_t *tag_data = tag_data_for_id (node_id, NODE);
+    vexbin_write_tags (tag_data + node.tags); // TODO does this work if tag list is empty?
     /* Retain values to allow delta-coding on next node to be written. */
     last_node_id = node_id;
     last_x = node.coord.x;
@@ -718,7 +719,8 @@ static void vexbin_write_way (int64_t way_id) {
         last_node_id = node_ref; 
         vexbin_write_signed (ref_delta);
     }
-    vexbin_write_tags (way.tags);
+    uint8_t *tag_data = tag_data_for_id (way_id, WAY);
+    vexbin_write_tags (tag_data + way.tags);
     /* Retain value to allow delta-coding on next way to be written. */
     last_way_id = way_id;
 }
@@ -791,8 +793,9 @@ int main (int argc, const char * argv[]) {
         else
           pbf_file = open_output_file(argv[6], 0);
 
-        pbf_write_begin(pbf_file);
-
+//        pbf_write_begin(pbf_file);
+        vexbin_write_init (pbf_file);
+        
         /* Make three passes, first outputting all nodes, then all ways, then all relations. */
         for (int stage = NODE; stage <= RELATION; stage++) {
             for (uint32_t x = min_xbin; x <= max_xbin; x++) {
@@ -801,8 +804,8 @@ int main (int argc, const char * argv[]) {
                         uint32_t rel_id = grid->cells[x][y].head_relation;
                         while (rel_id > 0) {
                             Relation rel = relations[rel_id];
-                            uint8_t *tags = tag_data_for_id (rel_id, RELATION);
-                            pbf_write_relation (rel_id, &(rel_members[rel.member_offset]), &(tags[rel.tags]));
+//                            uint8_t *tags = tag_data_for_id (rel_id, RELATION);
+//                            pbf_write_relation (rel_id, &(rel_members[rel.member_offset]), &(tags[rel.tags]));
                             rel_id = rel.next; // list links within cell are embedded in relations
                         }
                         continue; // all the rest of the code in the y loop body is for WAY and NODE
@@ -819,8 +822,10 @@ int main (int argc, const char * argv[]) {
                             if (way_id <= 0) break;
                             Way way = ways[way_id];
                             if (stage == WAY) {
-                                uint8_t *tags = tag_data_for_id(way_id, WAY);
-                                pbf_write_way(way_id, &(node_refs[way.node_ref_offset]), &(tags[way.tags]));
+//                                uint8_t *tags = tag_data_for_id(way_id, WAY);
+//                                pbf_write_way(way_id, &(node_refs[way.node_ref_offset]), &(tags[way.tags]));
+                                print_way (way_id);
+                                vexbin_write_way (way_id);
                             } else if (stage == NODE) {
                                 /* Output all nodes in this way. */
                                 //FIXME Intersection nodes are repeated.
@@ -832,10 +837,12 @@ int main (int argc, const char * argv[]) {
                                         node_id = -node_id;
                                         more = false;
                                     }
-                                    Node node = nodes[node_id];
-                                    uint8_t *tags = tag_data_for_id(node_id, NODE);
-                                    pbf_write_node(node_id, get_lat(&(node.coord)),
-                                        get_lon(&(node.coord)), &(tags[node.tags]));
+                                    print_node (node_id);
+                                    vexbin_write_node (node_id);
+//                                    Node node = nodes[node_id];
+//                                    uint8_t *tags = tag_data_for_id(node_id, NODE);
+//                                    pbf_write_node(node_id, get_lat(&(node.coord)),
+//                                        get_lon(&(node.coord)), &(tags[node.tags]));
                                 }
                             }
                         }
