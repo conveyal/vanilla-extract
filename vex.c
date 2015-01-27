@@ -599,60 +599,127 @@ static void print_way (int64_t way_id) {
     fprintf(stderr, "\n");
 }
 
-/*
-  Fields and functions for saving compact binary OSM.
-  This is comparable in size to PBF if you zlib it in blocks, but much simpler.
-  Q: why does PBF use string tables since a similar result is achieved by zipping the blocks?
+/* 
+    Functions prefixed with vexbin_write_ output OSM in a much simpler binary format.
+    This is comparable in size to PBF if you zlib it in blocks, but much simpler.
+    Q: why does PBF use string tables since a similar result is achieved by zipping the blocks?
+    The variables declared here are used to hold shared state for all the write functions.
+    TODO move to another module or namespace these variables with a prefix or a struct.
 */
-FILE *ofile;
+
 int32_t last_x, last_y;
 int64_t last_node_id, last_way_id;
+FILE *ofile;
 
-static void save_init () {
-    ofile = NULL; //open_db_file("out.bin", 0);
+/* Begin writing to a VEx format OSM file. */
+void vexbin_write_init (FILE *output_file) {
     last_x = 0;
     last_y = 0;
     last_node_id = 0;
     last_way_id = 0;
+    ofile = output_file;
 }
 
-static void save_tags (uint32_t idx) {
-    KeyVal kv;
+/* Clean up after writing to a VEx format OSM file. */
+void vexbin_write_complete () {
+    fclose (ofile);
+    vexbin_write_init (NULL);
+}
+
+/* Write a positive integer to the output file using Protobuf variable width conventions. */
+static void vexbin_write_length (size_t length) {
+    // max length of a 64 bit varint is 10 bytes
+    uint8_t varint_buf[10]; 
+    size_t size = uint64_pack (length, varint_buf);
+    fwrite (&varint_buf, size, 1, ofile);
+}
+
+/* Write a signed integer to the output file using Protobuf variable width conventions. */
+static void vexbin_write_signed (int64_t length) {
+    // max length of a 64 bit varint is 10 bytes
+    uint8_t varint_buf[10]; 
+    size_t size = sint64_pack (length, varint_buf);
+    fwrite (&varint_buf, size, 1, ofile);
+}
+
+/* 
+  Write a byte buffer to the output file, where the buffer address and length are provided separately.
+  The raw bytes are prefixed with a variable-width integer giving their length. This format should 
+  be the same size as the zero-terminated representation for for all strings up to 128 characters.
+*/
+static void vexbin_write_buf (char *bytes, size_t length) {
+    vexbin_write_length (length);
+    fwrite (bytes, length, 1, ofile);
+}
+
+/* Write a zero-terminated string using our byte buffer format. */
+static void vexbin_write_string (char *string) {
+    size_t len = strlen (string);
+    vexbin_write_buf (string, len);
+}
+
+/* 
+  Decode a list of tags from VEx internal format and write them out as length-prefixed strings.
+  The length of this list is output first as a variable-width integer.
+  The subsequent data compression pass should tokenize any frequently occurring tags.
+*/
+static void vexbin_write_tags (uint32_t idx) {
+    KeyVal kv; // stores the output of the tag decoder function
     if (idx != UINT32_MAX) {
         char *t0 = NULL; //&(tags[idx]); // FIXME segment
         char *t = t0;
-        while (*t != INT8_MAX) t += decode_tag(t, &kv);
-        fwrite(t0, t - t0, 1, ofile);
+        int ntags = 0;
+        /* First count the number of tags and write out that number. */
+        while (*t != INT8_MAX) {
+            t += decode_tag (t, &kv);
+            ntags += 1;
+        }
+        vexbin_write_length (ntags);
+        /* Then reset to the beginning of the list and actually write out the tags. */
+        t = t0;
+        while (*t != INT8_MAX) {
+            t += decode_tag (t, &kv);        
+            vexbin_write_string (kv.key);
+            vexbin_write_string (kv.val);
+        }
     }
-    fputc(INT8_MAX, ofile);
 }
 
-static void save_node (int64_t node_id) {
+static void vexbin_write_node (int64_t node_id) {
     Node node = nodes[node_id];
-    uint8_t buf[10]; // 10 is max length of a 64 bit varint
     int64_t id_delta = node_id - last_node_id;
+    // TODO convert to fixed-point lat,lon as in PBF?
     int32_t x_delta = node.coord.x - last_x;
     int32_t y_delta = node.coord.y - last_y;
-    size_t size;
-    size = sint64_pack(id_delta, buf);
-    fwrite(&buf, size, 1, ofile);
-    size = sint32_pack(x_delta, buf);
-    fwrite(&buf, size, 1, ofile);
-    size = sint32_pack(y_delta, buf);
-    fwrite(&buf, size, 1, ofile);
-    save_tags(node.tags);
+    vexbin_write_signed (id_delta);
+    vexbin_write_signed (x_delta);
+    vexbin_write_signed (y_delta);
+    vexbin_write_tags (node.tags);
+    /* Retain values to allow delta-coding on next node to be written. */
     last_node_id = node_id;
     last_x = node.coord.x;
     last_y = node.coord.y;
 }
 
-static void save_way (int64_t way_id) {
+static void vexbin_write_way (int64_t way_id) {
     Way way = ways[way_id];
-    uint8_t buf[10]; // 10 is max length of a 64 bit varint
     int64_t id_delta = way_id - last_way_id;
-    size_t size = sint64_pack(id_delta, buf);
-    fwrite(&buf, size, 1, ofile);
-    save_tags(way.tags);
+    vexbin_write_signed (id_delta);
+    int64_t *node_ref_p = node_refs + way.node_ref_offset;
+    bool more_refs = true;
+    for (; more_refs; node_ref_p++) {
+        int64_t node_ref = *node_ref_p;
+        if (node_ref < 0) {
+            more_refs = false;
+            node_ref = -node_ref;
+        }
+        // Delta code way references (even across ways) 
+        int64_t ref_delta = node_ref - last_node_id;
+        last_node_id = node_ref; 
+        vexbin_write_signed (ref_delta);
+    }
+    vexbin_write_tags (way.tags);
+    /* Retain value to allow delta-coding on next way to be written. */
     last_way_id = way_id;
 }
 
