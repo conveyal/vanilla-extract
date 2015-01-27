@@ -347,9 +347,14 @@ static TagSubfile *tag_subfile_for_id (int64_t osmid, int entity_type) {
     if (subfile >= MAX_SUBFILES) die ("Need more subfiles than expected.");
     TagSubfile *ts = &(tag_subfiles[subfile]);
     if (ts->data == NULL) {
-        // Lazy-map a subfile when needed.
+        /* Lazy-map a subfile the first time it is needed. */
         ts->data = map_file("tags", subfile, UINT32_MAX); // all files are 4GB sparse maps
-        ts->pos = 0;
+        /* 
+          Store a tag list terminator byte at the beginning of each file. This empty list will 
+          be shared by all entities that do not have any tags, which all have tag offset zero.
+        */
+        ts->data[0] = INT8_MAX; 
+        ts->pos = 1;
     }
     return ts;
 }
