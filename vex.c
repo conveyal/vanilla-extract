@@ -16,6 +16,7 @@
 #include "intpack.h"
 #include "pbf.h"
 #include "tags.h"
+#include "idtracker.h"
 
 // 14 bits -> 1.7km at 45 degrees
 // 13 bits -> 3.4km at 45 degrees
@@ -612,7 +613,7 @@ void print_way (int64_t way_id) {
 
 /* 
     Functions prefixed with vexbin_write_ output OSM in a much simpler binary format.
-    This is comparable in size to PBF if you zlib it in blocks, but much simpler.
+    This is comparable in size or smaller than PBF if you zlib it in blocks, but much simpler.
     Q: why does PBF use string tables since a similar result is achieved by zipping the blocks?
     The variables declared here are used to hold shared state for all the write functions.
     TODO move to another module, or namespace these variables with a prefix or a struct.
@@ -709,14 +710,17 @@ static void vexbin_write_way (int64_t way_id) {
     Way way = ways[way_id];
     int64_t id_delta = way_id - last_way_id;
     vexbin_write_signed (id_delta);
-    int64_t *node_ref_p = node_refs + way.node_ref_offset;
-    bool more_refs = true;
-    for (; more_refs; node_ref_p++) {
-        int64_t node_ref = *node_ref_p;
-        if (node_ref < 0) {
-            more_refs = false;
-            node_ref = -node_ref;
-        }
+    /* Count the number of node refs in this way and write out the count before the list. */
+    int n_refs = 0;
+    for (int64_t *node_ref_p = node_refs + way.node_ref_offset; true; node_ref_p++) {
+        n_refs++;
+        if (*node_ref_p < 0) break;
+    }
+    vexbin_write_length (n_refs);
+    int64_t *node_refs_for_way = node_refs + way.node_ref_offset;
+    for (int r = 0; r < n_refs; r++) {
+        int64_t node_ref = node_refs_for_way[r];
+        if (node_ref < 0) node_ref = -node_ref;
         // Delta code way references (even across ways) 
         int64_t ref_delta = node_ref - last_node_id;
         last_node_id = node_ref; 
@@ -803,11 +807,15 @@ int main (int argc, const char * argv[]) {
             }
         }
 
+        /* Initialize writing state for the chosen format. */
         if (vexformat) {
             vexbin_write_init (pbf_file);
         } else {
             pbf_write_begin(pbf_file);
         }
+
+        /* Initialize the ID tracker so we can avoid outputting nodes more than once. */
+        IDTracker_reset ();
         
         /* Make three passes, first outputting all nodes, then all ways, then all relations. */
         for (int stage = NODE; stage <= RELATION; stage++) {
@@ -848,7 +856,6 @@ int main (int argc, const char * argv[]) {
                                 }
                             } else if (stage == NODE) {
                                 /* Output all nodes in this way. */
-                                //FIXME Intersection nodes are repeated.
                                 uint32_t nr = way.node_ref_offset;
                                 bool more = true;
                                 for (; more; nr++) {
@@ -858,6 +865,8 @@ int main (int argc, const char * argv[]) {
                                         more = false;
                                     }
                                     // print_node (node_id); // DEBUG
+                                    /* Mark this node, and skip outputting it if already seen. */
+                                    if (IDTracker_set (node_id)) continue;
                                     if (vexformat) {
                                         vexbin_write_node (node_id);
                                     } else {
