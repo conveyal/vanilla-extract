@@ -7,6 +7,11 @@
   we get something like 512 MB of space needed. To keep this simple we just allocate all that at
   once and let the OS take care of paging. 
   Note that the VM page size is typically 4 kBytes, so this is not as sparse as we'd ideally like.
+  But with one or more levels of indirection to dynamically allocated bins, the pointers to the 
+  bins are each 64 bits so the bins would need to be relatively large to be effective. It would
+  only really be advantageous if the bins were looked up in a dynamically resized hashtable rather
+  than a flat array, so it gets complicated quickly.
+  The approach used here is much more simple and much less prone to error.
 */
 
 #include <stdint.h>
