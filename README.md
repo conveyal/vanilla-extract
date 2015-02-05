@@ -48,7 +48,7 @@ and is used like so:
 
 Parameters are taken from the environment:
 - VEX_DB: the path to the vex database to use, default '/var/osm/db/'
-- VEX_CMD: the command to run vex, default 'vex'
+- VEX_CMD: the command to run vex, default 'vex'. If vex is not in your path, change to a relative or absolute path to the binary.
 - VEX_HOST: the hostname to bind on, or 0.0.0.0 for all interfaces; default 0.0.0.0
 - VEX_PORT: the port to server on, default 8282
 
