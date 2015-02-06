@@ -56,10 +56,8 @@ Parameters are taken from the environment:
 
 Remaining loose ends to provide lossless extracts:
 
-* Avoid repeated instances of intersection nodes. Solvable with a sparse bitset (already implemented).
 * Retain isolated nodes that are not referenced by a way. Such nodes must be indexed alongside the ways in each grid bin.
-* Reading, storage, and writing of relations.
-* Dense nodes.
+* Dense nodes (though this is a quirk of the PBF format and may be avoided by using our native format).
 
 Future possibilities include:
 
