@@ -737,6 +737,13 @@ int main (int argc, const char * argv[]) {
     if (argc != 3 && argc != 7) usage();
     database_path = argv[1];
     in_memory = (strcmp(database_path, "memory") == 0);
+    if (argc == 3 && !in_memory) {
+        // Creating an on-disk database. Create the directory and complain loudly if it already exists.
+        // We don't want to accidentally destroy two hours of PBF loading, and we don't want to re-open
+        // an existing database for writing (that's not supported yet and causes undefined behavior i.e. segfaults).
+        if (mkdir(database_path, 0777) == -1) die ("Could not create database. "
+             "Perhaps the directory already exists or you have insufficient permissions.");
+    }
     lock_fd = open("/tmp/vex.lock", O_CREAT, S_IRWXU);
     if (lock_fd == -1) die ("Error opening or creating lock file.");
 
