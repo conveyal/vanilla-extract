@@ -1,5 +1,5 @@
 CC=clang 
-# CC=gcc
+#CC=gcc
 CFLAGS=-Wall -std=gnu99 -O3 -g # -pg for gprof
 LIBS=-lprotobuf-c -lz -lrt -lm # rt is for shared memory
 SOURCES=$(wildcard *.c)
