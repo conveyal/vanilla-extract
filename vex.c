@@ -87,7 +87,7 @@ static double get_lon (coord_t *coord) {
 */
 typedef struct {
     int32_t refs[WAY_BLOCK_SIZE];
-    uint32_t next; // index of next way block, or number of free slots if negative
+    uint32_t next; // the index of the next way block in the chain, or zero if there is no next way block.
 } WayBlock;
 
 /*
@@ -271,6 +271,8 @@ static uint32_t new_way_block() {
         die("More way reference blocks are used than expected.");
     // A negative value in the last ref entry gives the number of free slots in this block.
     way_blocks[way_block_count].refs[WAY_BLOCK_SIZE-1] = -WAY_BLOCK_SIZE;
+    // Also set the next block index to 0 to indicate no next block
+    way_blocks[way_block_count].next = 0; 
     // fprintf(stderr, "created way block %d\n", way_block_count);
     return way_block_count++;
 }
@@ -864,8 +866,7 @@ int main (int argc, const char * argv[]) {
                             } else if (stage == NODE) {
                                 /* Output all nodes in this way. */
                                 uint32_t nr = way.node_ref_offset;
-                                bool more = true;
-                                for (; more; nr++) {
+                                for (bool more = true; more; nr++) {
                                     int64_t node_id = node_refs[nr];
                                     if (node_id < 0) {
                                         node_id = -node_id;
