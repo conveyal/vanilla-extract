@@ -82,8 +82,11 @@ static double get_lon (coord_t *coord) {
 
 /* 
   A block of way references. Chained together to record which ways begin in each grid cell. 
-  Note that way references can still be stored in 32 bit integers since there are not as many of 
-  them as there are nodes.
+  Way references can still be stored in signed 32 bit integers since there are not as many of 
+  them as there are nodes. If the last reference in a block is negative, it indicates how many
+  slots are unused at the end of the block. New empty way blocks for a particular grid cell are 
+  inserted at the head of the list, so even when the head block is not completely full it may
+  point to a next block.
 */
 typedef struct {
     int32_t refs[WAY_BLOCK_SIZE];
@@ -484,15 +487,15 @@ static void handle_way (OSMPBF__Way *way, ProtobufCBinaryData *string_table) {
     WayBlock *wb = &(way_blocks[wbi]);
     /* If the last node ref is non-negative, no free slots remain. Chain a new empty block. */
     if (wb->refs[WAY_BLOCK_SIZE - 1] >= 0) {
-        int32_t n_wbi = new_way_block();
+        uint32_t new_way_block_index = new_way_block();
         // Insert new block at head of list to avoid later scanning though large swaths of memory.
-        wb = &(way_blocks[n_wbi]);
+        wb = &(way_blocks[new_way_block_index]);
         wb->next = wbi;
-        set_grid_way_block(&(nodes[way->refs[0]]), n_wbi);
+        set_grid_way_block(&(nodes[way->refs[0]]), new_way_block_index);
     }
     /* We are now certain to have a free slot in the current block. */
     int nfree = wb->refs[WAY_BLOCK_SIZE - 1];
-    if (nfree >= 0) die ("Final ref should be negative, indicating number of empty slots.");
+    if (nfree >= 0) die ("Final ref was expected to be negative, indicating the number of free slots.");
     /* A final ref < 0 gives the number of free slots in this block. */
     int free_idx = WAY_BLOCK_SIZE + nfree;
     wb->refs[free_idx] = way->id;
