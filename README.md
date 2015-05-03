@@ -9,13 +9,20 @@ You will need zlib and protobuf-c libraries. On ubuntu you can install them from
 
 `sudo apt-get install libprotobuf-c0-dev zlib1g-dev`
 
-You will also need gcc and make if you don't already have them:
+You will also need gcc, make, and the c protobuf compiler if you don't already have them:
 
-`sudo apt-get install build-essential`
+`sudo apt-get install build-essential protobuf-c-compiler`
 
 Clang is a nice compiler which produces nice error messages. You may want to install it and modify the CC line of the makefile to use it:
 
 `sudo apt-get install clang`
+
+First you need to generate some source code from Protobuf specifications: 
+
+```
+protoc-c fileformat.proto --c_out=.
+protoc-c osmformat.proto --c_out=.
+```
 
 Then just make as usual:
 
