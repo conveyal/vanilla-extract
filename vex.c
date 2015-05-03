@@ -30,10 +30,10 @@
   https://taginfo.openstreetmap.org/reports/database_statistics
   There are over 10 times as many nodes as ways in OSM.
 */
-#define MAX_NODE_ID   4000000000
-#define MAX_WAY_ID     400000000
-#define MAX_REL_MEMBERS 40000000
-#define MAX_REL_ID       4000000
+#define MAX_NODE_ID   5000000000 // 3 400 000 000 exists
+#define MAX_WAY_ID     800000000 //   330 000 000 exists
+#define MAX_REL_MEMBERS 50000000
+#define MAX_REL_ID      10000000 //     4 850 000 exists
 
 /* Assume there are as many active node references as there are active and deleted nodes. */
 #define MAX_NODE_REFS MAX_NODE_ID
