@@ -438,10 +438,12 @@ static long rels_loaded = 0;
 
 /* Node callback handed to the general-purpose PBF loading code. */
 static void handle_node (OSMPBF__Node *node, ProtobufCBinaryData *string_table) {
-    if (node->id > MAX_NODE_ID)
+    if (node->id >= MAX_NODE_ID) {
         die("OSM data contains nodes with larger IDs than expected.");
-    if (ways_loaded > 0)
+    }
+    if (ways_loaded > 0) {
         die("All nodes must appear before any ways in input file.");
+    }
     // lat and lon are in nanodegrees
     double lat = node->lat * 0.000000001;
     double lon = node->lon * 0.000000001;
@@ -459,8 +461,9 @@ static void handle_node (OSMPBF__Node *node, ProtobufCBinaryData *string_table) 
   All nodes must come before any ways in the input for this to work.
 */
 static void handle_way (OSMPBF__Way *way, ProtobufCBinaryData *string_table) {
-    if (way->id > MAX_WAY_ID)
-        die("OSM data contains ways greater IDs than expected.");
+    if (way->id >= MAX_WAY_ID) {
+        die("OSM data contains ways with larger IDs than expected.");
+    }
     /*
        Copy node references into a sub-segment of one big array, reversing the PBF delta coding so
        they are absolute IDs. All the refs within a way or relation are always known at once, so
@@ -512,13 +515,16 @@ static void handle_way (OSMPBF__Way *way, ProtobufCBinaryData *string_table) {
   Copies one OSMPBF__Relation into a VEx Relation and inserts it in the grid spatial index.
 */
 static void handle_relation (OSMPBF__Relation* relation, ProtobufCBinaryData *string_table) {
+    if (relation->id >= MAX_REL_ID) {
+        die("OSM data contains relations with larger IDs than expected.");
+    }
     if (relation->n_memids == 0) return; // logic below expects at least one member reference
     Relation *r = &(relations[relation->id]); // the Vex struct into which we are copying the PBF relation
     r->member_offset = n_rel_members;
     RelMember *rm = &(rel_members[n_rel_members]);
     /* Check to avoid writing past the end of the relation members file. */
     if (n_rel_members + relation->n_memids >= MAX_REL_MEMBERS) {
-        die ("relation members index is about to exceed its maximum allowed value.");
+        die ("There are more relation members in the OSM data than expected.");
     }
     /* Copy all the relation members from PBF into the VEx array. */
     int64_t last_id = 0;
