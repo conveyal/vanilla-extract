@@ -6,4 +6,8 @@
 *.pyc
 *.d
 
+# protobuf generated files
+*.pb-c.c
+*.pb-c.h
+
 vex
