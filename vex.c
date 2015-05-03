@@ -143,10 +143,6 @@ typedef struct {
     GridCell cells[GRID_DIM][GRID_DIM]; // contains indexes to way_blocks and relations
 } Grid;
 
-/* File descriptor for the lockfile. */
-/* Use BSD-style locks which are associated with the file, not the process. */
-static int lock_fd;
-
 /* Print human readable representation based on multiples of 1024 into a static buffer. */
 static char human_buffer[128];
 char *human (size_t bytes) {
@@ -495,8 +491,8 @@ static void handle_way (OSMPBF__Way *way, ProtobufCBinaryData *string_table) {
     }
     /* We are now certain to have a free slot in the current block. */
     int nfree = wb->refs[WAY_BLOCK_SIZE - 1];
-    if (nfree >= 0) die ("Final ref was expected to be negative, indicating the number of free slots.");
     /* A final ref < 0 gives the number of free slots in this block. */
+    if (nfree >= 0) die ("Final ref was expected to be negative, indicating the number of free slots.");
     int free_idx = WAY_BLOCK_SIZE + nfree;
     wb->refs[free_idx] = way->id;
     /* If this was not the last available slot, reduce number of free slots in this block by one. */
@@ -737,22 +733,42 @@ static void vexbin_write_way (int64_t way_id) {
     last_way_id = way_id;
 }
 
+#define ACTION_NONE 0
+#define ACTION_LOAD 1
+#define ACTION_EXTRACT 2
+
 int main (int argc, const char * argv[]) {
 
-    if (argc != 3 && argc != 7) usage();
+    /* Decide whether we are loading or extracting based on the number of command line parameters. */
+    int action = ACTION_NONE;
+    if (argc == 3) {
+        action = ACTION_LOAD;
+    } else if (argc == 7) {
+        action = ACTION_EXTRACT;
+    } else {
+        usage();
+    }
+    
+    /* When creating an on-disk database, create the directory and complain loudly if it already exists.
+    We don't want to accidentally destroy two hours of PBF loading, and we don't want to re-open an 
+    existing database for writing (that's not supported yet and causes undefined behavior). */
     database_path = argv[1];
     in_memory = (strcmp(database_path, "memory") == 0);
-    if (argc == 3 && !in_memory) {
-        // Creating an on-disk database. Create the directory and complain loudly if it already exists.
-        // We don't want to accidentally destroy two hours of PBF loading, and we don't want to re-open
-        // an existing database for writing (that's not supported yet and causes undefined behavior i.e. segfaults).
-        if (mkdir(database_path, 0777) == -1) die ("Could not create database. "
-             "Perhaps the directory already exists or you have insufficient permissions.");
+    if (ACTION_LOAD == action && !in_memory) {
+        int err = mkdir(database_path, 0777);
+        if (err == -1) die ("Could not create database. Perhaps the directory already exists "
+            "or you have insufficient permissions.");
     }
-    lock_fd = open("/tmp/vex.lock", O_CREAT, S_IRWXU);
-    if (lock_fd == -1) die ("Error opening or creating lock file.");
 
-    /* Memory-map files for each OSM element type, and for references between them. */
+    /* Open or create the lock file, which will prevent database writes from happening during reads.
+    Use BSD-style locks which are associated with the file, not the process. */
+    int lock_fd = open("/tmp/vex.lock", O_CREAT, S_IRWXU);
+    if (lock_fd == -1) {
+        die ("Error opening or creating lock file.");
+    }
+
+    /* Memory-map files or create shared memory objects for each OSM element type, 
+    and for references between them. */
     grid        = map_file("grid",        0, sizeof(Grid));
     ways        = map_file("ways",        0, sizeof(Way)       * MAX_WAY_ID);
     nodes       = map_file("nodes",       0, sizeof(Node)      * MAX_NODE_ID);
@@ -761,8 +777,9 @@ int main (int argc, const char * argv[]) {
     relations   = map_file("relations",   0, sizeof(Relation)  * MAX_REL_ID);
     rel_members = map_file("rel_members", 0, sizeof(RelMember) * MAX_REL_MEMBERS);
 
-    if (argc == 3) {
-        /* LOAD */
+    if (ACTION_LOAD == action) {
+
+        /* LOAD INTO DATABASE */
         const char *filename = argv[2];
         PbfReadCallbacks callbacks = {
             .way  = &handle_way,
@@ -779,8 +796,10 @@ int main (int argc, const char * argv[]) {
         fprintf(stderr, "loaded %ld nodes, %ld ways, and %ld relations total.\n", 
                 nodes_loaded, ways_loaded, rels_loaded);
         return EXIT_SUCCESS;
-    } else if (argc == 7) {
-        /* QUERY */
+        
+    } else if (ACTION_EXTRACT == action) {
+    
+        /* EXTRACT FROM DATABASE */
         double min_lat = strtod(argv[2], NULL);
         double min_lon = strtod(argv[3], NULL);
         double max_lat = strtod(argv[4], NULL);
@@ -806,60 +825,64 @@ int main (int argc, const char * argv[]) {
         flock(lock_fd, LOCK_SH);
 
         /* Get the output stream, interpreting the dash character as stdout. */
-        FILE *pbf_file;
+        FILE *output_file;
         if (strcmp(argv[6], "-") == 0) {
-            pbf_file = stdout;
+            output_file = stdout;
         } else {
-            pbf_file = open_output_file (argv[6], 0);
+            output_file = open_output_file (argv[6], 0);
             char *dot = strrchr (argv[6],'.');
             /* Use a custom binary format when the file extension is .vex */
             if (dot != NULL && strcmp (dot,".vex") == 0) {
                 vexformat = true;
-                fprintf (stderr, "Output will be in VEx binary format.\n");
+                fprintf (stderr, "Output will be in VEX binary format.\n");
             }
         }
 
         /* Initialize writing state for the chosen format. */
         if (vexformat) {
-            vexbin_write_init (pbf_file);
+            vexbin_write_init (output_file);
         } else {
-            pbf_write_begin(pbf_file);
+            pbf_write_begin (output_file);
         }
 
         /* Initialize the ID tracker so we can avoid outputting nodes more than once. */
-        IDTracker_reset ();
+        IDTracker_reset (); // TODO also track ways so we can store ways in more than one tile
         
         /* Make three passes, first outputting all nodes, then all ways, then all relations. */
         for (int stage = NODE; stage <= RELATION; stage++) {
             for (uint32_t x = min_xbin; x <= max_xbin; x++) {
                 for (uint32_t y = min_ybin; y <= max_ybin; y++) {
                     if (stage == RELATION) {
-                        uint32_t rel_id = grid->cells[x][y].head_relation;
-                        while (rel_id > 0) {
-                            Relation rel = relations[rel_id];
+                        uint32_t relation_id = grid->cells[x][y].head_relation;
+                        while (relation_id > 0) {
+                            Relation rel = relations[relation_id];
                             if (vexformat) {
-                                // TODO NOOP
+                                // TODO Output relations in VEX format
                             } else {
-                                uint8_t *tags = tag_data_for_id (rel_id, RELATION);
-                                pbf_write_relation (rel_id, &(rel_members[rel.member_offset]), &(tags[rel.tags]));
+                                uint8_t *tags = tag_data_for_id (relation_id, RELATION);
+                                pbf_write_relation (relation_id, 
+                                    &(rel_members[rel.member_offset]), &(tags[rel.tags])
+                                );
                             }
-                            rel_id = rel.next; // list links within a cell are embedded in relations
+                            /* Within a tile, relations are linked into a list. */
+                            relation_id = rel.next; 
                         }
-                        continue; // all the rest of the code in the y loop body is for WAY and NODE
+                        /* All the remaining code in the y loop body relates only to WAY and NODE stages. */
+                        continue; 
                     }
-                    /* Following code handles NODE and WAY if RELATION clause was not entered. */
-                    uint32_t wbidx = grid->cells[x][y].head_way_block;
-                    // printf ("xbin=%d ybin=%d way bin index %u\n", x, y, wbidx);
-                    if (wbidx == 0) continue; // There are no ways in this grid cell.
-                    /* Iterate over all ways in this block, and its chained blocks. */
-                    WayBlock *wb = &(way_blocks[wbidx]);
-                    for (;;) {
+                    /* The following code handles NODE and WAY stages if RELATION clause was not entered.
+                    Iterate over all ways in this block, then repeat for any chained blocks.
+                    If there are no ways in this grid cell, the head way block index will be zero. */
+                    // TODO factor this and the above relation output code out into functions
+                    uint32_t way_block_index = grid->cells[x][y].head_way_block;
+                    for (WayBlock *way_block = NULL; way_block_index > 0; way_block_index = way_block->next) {
+                        way_block = &(way_blocks[way_block_index]);
                         for (int w = 0; w < WAY_BLOCK_SIZE; w++) {
-                            int64_t way_id = wb->refs[w];
+                            int64_t way_id = way_block->refs[w];
+                            /* Empty slots in the way block will be either negative or zero. */
                             if (way_id <= 0) break;
                             Way way = ways[way_id];
                             if (stage == WAY) {
-                                // print_way (way_id); // DEBUG
                                 if (vexformat) {
                                     vexbin_write_way (way_id);
                                 } else {
@@ -889,16 +912,15 @@ int main (int argc, const char * argv[]) {
                                 }
                             }
                         }
-                        if (wb->next == 0) break;
-                        wb = &(way_blocks[wb->next]);
                     }
                 }
             }
             /* Write out any buffered nodes or ways before beginning the next PBF writing stage. */
             if (!vexformat) pbf_write_flush();
         }
-        fclose(pbf_file);
-        flock(lock_fd, LOCK_UN); // release the shared lock, allowing writes to begin.
+        fclose(output_file);
+        /* Release the shared lock, allowing writes to begin. */
+        flock(lock_fd, LOCK_UN); 
     }
 
 }
