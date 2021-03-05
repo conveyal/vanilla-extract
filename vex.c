@@ -46,7 +46,8 @@
 
 /* Assume there are as many active node references as there are active and deleted nodes. */
 // This is going to fail - many nodes are referenced twice, and our node ref offsets are uint32s.
-// These need to be addressed in blocks like ways, which can be referenced from both ways and grid cells.
+// These could be addressed in blocks like ways, which can be referenced from both ways and grid cells.
+// Or the ID space of ways can be partitioned, yielding multiple node_refs files.
 #define MAX_NODE_REFS MAX_NODE_ID
 
 /* Way reference block size is based on the typical number of ways per grid cell. */
@@ -342,18 +343,29 @@ typedef struct {
     size_t pos;
 } TagSubfile;
 
-#define MAX_SUBFILES 32
+// MAX_SUBFILES must be larger than MAX_WAY_ID divided by the number of IDs per partition, 15 at present.
+#define MAX_SUBFILES 20
 static TagSubfile tag_subfiles[MAX_SUBFILES] = {[0 ... MAX_SUBFILES - 1] {.data=NULL, .pos=0}};
 
 /*
-  To ensure less than 2^32 addressable tags, we associate blocks of entity ID space with tag storage partitions.
+  To allow 32-bit byte offsets for tags, we associate blocks of entity ID space with tag storage partitions.
   Most tags are on ways. There are about 10 times as many nodes as ways, and 100 times less relations than ways, 
   so we divide node IDs and multiply relation IDs to roughly normalize them to the range of way IDs.
+  This partitioning scheme should also be applied to other tables, such as node references (partition by way ID)
+  and way references (partition by flattened grid cell index). All should be scaled to the same range of MAX_WAY_ID.
 */
 static uint32_t subfile_index_for_id (int64_t osmid, int entity_type) {
     if (entity_type == NODE) osmid /= 16;
     else if (entity_type == RELATION) osmid *= 64;
-    uint32_t subfile = osmid >> 25; // split the way id space into sub-ranges of 33 million IDs.
+    // Bit-shifting by 25 bits splits the way id space into sub-ranges of about 33 million IDs.
+    // The 2.5% of nodes that have tags have an average of 3.2 tags each. 
+    // So we expect around 2.7 million way tags in this ID range (2^15 * 0.025 * 3.2).
+    // Way density is fixed at 1/16 of nodes, and ways have an average of 2.3 tags.
+    // So we expect about 4.8 million way tags in this ID range ((2^15 / 16) * 2.3).
+    // This gives us an average of 572 bytes of addressable storage per tag
+    // (2^32 / ((2^25 * 0.025 * 3.2) + ((2^25 / 16) * 2.3))).
+    // Shifting by 26 bits halves this to an average of 286 bytes per tag, making less files.
+    uint32_t subfile = osmid >> 26; 
     return subfile;
 }
 
@@ -563,7 +575,7 @@ static void handle_relation (OSMPBF__Relation* relation, ProtobufCBinaryData *st
         grid_cell->head_relation = relation->id;
     }
     rels_loaded++;
-    if (rels_loaded % 1000 == 0)
+    if (rels_loaded % 100000 == 0)
         fprintf(stderr, "loaded %ldk relations\n", rels_loaded / 1000);
 }
 
