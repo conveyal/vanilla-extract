@@ -1,6 +1,7 @@
 CC=clang 
-#CC=gcc
-CFLAGS=-Wall -std=gnu99 -O3 -g # -pg for gprof
+# CC=gcc
+# add -pg for gprof, add -g for debugging symbols
+CFLAGS=-Wall -std=gnu99 -O3
 LIBS=-lprotobuf-c -lz -lm
 SOURCES=$(wildcard *.c)
 OBJECTS=$(SOURCES:.c=.o)
