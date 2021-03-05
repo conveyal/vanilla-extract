@@ -247,10 +247,10 @@ void *map_file(const char *name, uint32_t subfile, size_t size) {
     return base;
 }
 
-/* Open a buffered append FILE in the current working directory, performing some checks. */
+/* Open a buffered FILE in the current working directory for writing, performing some checks. */
 FILE *open_output_file(const char *name, uint8_t subfile) {
-    fprintf(stderr, "Opening file '%s' as append stream.\n", name);
-    FILE *file = fopen(name, "a"); // Creates if file does not exist.
+    fprintf(stderr, "Opening file '%s' for binary writing.\n", name);
+    FILE *file = fopen(name, "wb"); // Creates if file does not exist.
     if (file == NULL) die("Could not open file for output.");
     return file;
 }
