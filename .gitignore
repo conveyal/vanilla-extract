@@ -11,3 +11,5 @@
 *.pb-c.h
 
 vex
+*.vex
+data/
