@@ -28,14 +28,25 @@
 
 /*
   https://taginfo.openstreetmap.org/reports/database_statistics
-  There are over 10 times as many nodes as ways in OSM.
+  https://osmstats.neis-one.org/?item=elements
+  It would be more helpful to express the tag counts as distributions not averages.
+
+                     Count           MaxId    Deleted   Notes 
+  Nodes      6 749 584 713   8 488 293 903      20.5%   avg 3.2 tags on the 2.5% that have tags
+  Ways         747 345 392     913 770 712      18.2%   avg 2.3 tags per way
+  Relations      8 744 546      12 401 793      29.5%   avg 3.9 tags per relation
+  
+  Node to way ratio is 9, but this includes ways like coastlines and political boundaries.
+  Way to relation ratio is 84, though relations also directly include nodes.
 */
-#define MAX_NODE_ID   5000000000 // 3 400 000 000 exists
-#define MAX_WAY_ID     800000000 //   330 000 000 exists
-#define MAX_REL_MEMBERS 50000000
-#define MAX_REL_ID      10000000 //     4 850 000 exists
+#define MAX_NODE_ID    10000000000
+#define MAX_WAY_ID      1000000000
+#define MAX_REL_MEMBERS  100000000
+#define MAX_REL_ID        20000000
 
 /* Assume there are as many active node references as there are active and deleted nodes. */
+// This is going to fail - many nodes are referenced twice, and our node ref offsets are uint32s.
+// These need to be addressed in blocks like ways, which can be referenced from both ways and grid cells.
 #define MAX_NODE_REFS MAX_NODE_ID
 
 /* Way reference block size is based on the typical number of ways per grid cell. */
@@ -335,10 +346,9 @@ typedef struct {
 static TagSubfile tag_subfiles[MAX_SUBFILES] = {[0 ... MAX_SUBFILES - 1] {.data=NULL, .pos=0}};
 
 /*
-  The ID space must be split up.
-  Most tags are on ways. There are about 10 times as many nodes as ways, and 100 times less
-  relations than [ways?] so we divide way IDs and multiply relation IDs to spread them evenly across
-  the range of way IDs.
+  To ensure less than 2^32 addressable tags, we associate blocks of entity ID space with tag storage partitions.
+  Most tags are on ways. There are about 10 times as many nodes as ways, and 100 times less relations than ways, 
+  so we divide node IDs and multiply relation IDs to roughly normalize them to the range of way IDs.
 */
 static uint32_t subfile_index_for_id (int64_t osmid, int entity_type) {
     if (entity_type == NODE) osmid /= 16;
@@ -558,7 +568,8 @@ static void handle_relation (OSMPBF__Relation* relation, ProtobufCBinaryData *st
 }
 
 /*
-  Used for setting the grid side empirically.
+  Show the percentage of grid cells containing any objects.
+  Used to give empirical hints on setting the grid cell size.
   With 8 bit (256x256) grid, planet.pbf gives 36.87% full
   With 14 bit grid: 248351486 empty 20083970 used, 7.48% full
 */

@@ -4,7 +4,7 @@
 /*
   A bitset intended for tracking usage of OSM IDs, which are 64 bit integers.
   However most of that ID range is unused. If we just reserve one bit per ID that may be flagged,
-  we get something like 512 MB of space needed. To keep this simple we just allocate all that at
+  we need something like 1GB of space. To keep this simple we just allocate all that space at
   once and let the OS take care of paging. 
   Note that the VM page size is typically 4 kBytes, so this is not as sparse as we'd ideally like.
   But with one or more levels of indirection to dynamically allocated bins, the pointers to the 
@@ -20,9 +20,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#define MAX_ID (1L << 32)
+// Warning: the maximum node ID is almost reaching 2^33 as of March 2021.
+#define MAX_ID (1L << 33)
+// Why are we using 64-bit wide bins instead of single bytes?
 #define BIN_BITS 6
-#define BIN_MASK (64 - 1)
+#define BIN_MASK ((1L << BIN_BITS) - 1)
 #define N_BINS (MAX_ID >> BIN_BITS)
 
 static uint64_t bins[N_BINS];
