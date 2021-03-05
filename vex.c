@@ -289,6 +289,10 @@ static GridCell *get_grid_cell_for_coord (coord_t coord) {
 /* Return the GridCell containing the first member of the given relation. */
 static GridCell *get_grid_cell_for_relation (Relation *r) {
     RelMember first_member = rel_members[r->member_offset];
+    if (first_member.id < 0) {
+        // The relation has only one member. This is invalid so don't index it.
+        return NULL;
+    }
     if (first_member.element_type == NODE) {
         return get_grid_cell_for_coord (nodes[first_member.id].coord);
     } else if (first_member.element_type == WAY) {
