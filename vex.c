@@ -571,8 +571,9 @@ static void fillFactor () {
 
 /* Print out a message explaining command line parameters to the user, then exit. */
 static void usage () {
-    fprintf(stderr, "usage:\nvex database_dir input.osm.pbf\n");
-    fprintf(stderr, "vex database_dir min_lat min_lon max_lat max_lon (output_file.pbf|-)\n");
+    fprintf(stderr, "usage:\nvex database_dir <input.osm.pbf>\n");
+    fprintf(stderr, "vex database_dir min_lon,min_lat,max_lon,max_lat <output.osm.pbf>\n");
+    fprintf(stderr, "The output file name can also end in .vex or be - for stdout.\n");
     exit(EXIT_SUCCESS);
 }
 
@@ -749,7 +750,7 @@ int main (int argc, const char * argv[]) {
     int action = ACTION_NONE;
     if (argc == 3) {
         action = ACTION_LOAD;
-    } else if (argc == 7) {
+    } else if (argc == 4) {
         action = ACTION_EXTRACT;
     } else {
         usage();
@@ -806,11 +807,11 @@ int main (int argc, const char * argv[]) {
     } else if (ACTION_EXTRACT == action) {
     
         /* EXTRACT FROM DATABASE */
-        double min_lat = strtod(argv[2], NULL);
-        double min_lon = strtod(argv[3], NULL);
-        double max_lat = strtod(argv[4], NULL);
-        double max_lon = strtod(argv[5], NULL);
-        fprintf(stderr, "min = (%.5lf, %.5lf) max = (%.5lf, %.5lf)\n", min_lat, min_lon, max_lat, max_lon);
+        double min_lon = strtod(strtok(argv[2], ","), NULL);
+        double min_lat = strtod(strtok(NULL, ","), NULL);
+        double max_lon = strtod(strtok(NULL, ","), NULL);
+        double max_lat = strtod(strtok(NULL, ","), NULL);
+        fprintf(stderr, "min = (%.5lf, %.5lf) max = (%.5lf, %.5lf)\n", min_lon, min_lat, max_lon, max_lat);
         check_lat_range(min_lat);
         check_lat_range(max_lat);
         check_lon_range(min_lon);
@@ -832,11 +833,11 @@ int main (int argc, const char * argv[]) {
 
         /* Get the output stream, interpreting the dash character as stdout. */
         FILE *output_file;
-        if (strcmp(argv[6], "-") == 0) {
+        if (strcmp(argv[3], "-") == 0) {
             output_file = stdout;
         } else {
-            output_file = open_output_file (argv[6], 0);
-            char *dot = strrchr (argv[6],'.');
+            output_file = open_output_file (argv[3], 0);
+            char *dot = strrchr (argv[3],'.');
             /* Use a custom binary format when the file extension is .vex */
             if (dot != NULL && strcmp (dot,".vex") == 0) {
                 vexformat = true;
