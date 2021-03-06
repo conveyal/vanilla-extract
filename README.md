@@ -3,7 +3,7 @@ vanilla-extract
 
 Clone OSM planet and perform bounding-box extracts for bulk data users. Consumes PBF format, and produces both PBF and the experimental VEX format for binary OSM data exchange.
 
-Please note that this software is an **experimental prototype** for testing high efficiency data storage ideas tailored to very specific use cases. It rarely range checks its input data or asserts invariants about its own state, and is liable to crash at any time. It does some rather extreme things, such as mapping files big enough to hold every OSM node in the world directly into memory. The efficiency and feasibility of these approaches depend strongly on details of the operating system and filesystem in use.
+Please note that this is an **experimental prototype mostly dating from 2014** for testing high efficiency data storage ideas tailored to very specific use cases. It rarely range checks its input data or asserts invariants about its own state, and is not necessarily stable. It does some rather extreme things, such as mapping files big enough to hold every OSM node in the world directly into memory. The efficiency and feasibility of these approaches depend strongly on details of the operating system and filesystem in use.
 
 It also contains quite a lot of hard-coded constants that must be hand-tuned to fit the data set being loaded (maximum entity IDs, common tag values etc.) This means configuration or indeed any use of this software involves editing and recompiling C source code. If this sounds crazy to you, you probably don't want to use it.
 
