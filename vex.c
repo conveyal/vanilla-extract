@@ -345,7 +345,7 @@ typedef struct {
 
 // MAX_SUBFILES must be larger than MAX_WAY_ID divided by the number of IDs per partition, 15 at present.
 #define MAX_SUBFILES 20
-static TagSubfile tag_subfiles[MAX_SUBFILES] = {[0 ... MAX_SUBFILES - 1] {.data=NULL, .pos=0}};
+static TagSubfile tag_subfiles[MAX_SUBFILES] = {[0 ... MAX_SUBFILES - 1] = {.data=NULL, .pos=0}};
 
 /*
   To allow 32-bit byte offsets for tags, we associate blocks of entity ID space with tag storage partitions.
@@ -632,7 +632,7 @@ void print_tags (uint8_t *tag_data) {
 
 void print_node (uint64_t node_id) {
     Node node = nodes[node_id];
-    fprintf (stderr, "  node %ld (%.6f, %.6f) ", node_id, get_lat(&node.coord), get_lon(&node.coord));
+    fprintf (stderr, "  node %llu (%.6f, %.6f) ", node_id, get_lat(&node.coord), get_lon(&node.coord));
     uint8_t *tag_data = tag_data_for_id (node_id, NODE);
     fprintf (stderr, "(offset %d)", node.tags);
     print_tags (tag_data + node.tags);
@@ -640,7 +640,7 @@ void print_node (uint64_t node_id) {
 }
 
 void print_way (int64_t way_id) {
-    fprintf (stderr, "way %ld ", way_id);
+    fprintf (stderr, "way %llu ", way_id);
     uint8_t *tag_data = tag_data_for_id (way_id, WAY);
     print_tags (tag_data + ways[way_id].tags);
     fprintf (stderr, "\n");
@@ -834,7 +834,7 @@ int main (int argc, const char * argv[]) {
     } else if (ACTION_EXTRACT == action) {
     
         /* EXTRACT FROM DATABASE */
-        double min_lon = strtod(strtok(argv[2], ","), NULL);
+        double min_lon = strtod(strtok((char *) argv[2], ","), NULL);
         double min_lat = strtod(strtok(NULL, ","), NULL);
         double max_lon = strtod(strtok(NULL, ","), NULL);
         double max_lat = strtod(strtok(NULL, ","), NULL);

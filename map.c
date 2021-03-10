@@ -67,7 +67,7 @@ void Map_print (Map *map) {
         struct element *e = &(map->elements[i]);
         while (e != NULL) {
             if (e->key == KEY_NONE) printf ("NONE ");
-            else printf ("(%ld %d) ", e->key, e->val);
+            else printf ("(%llu %d) ", e->key, e->val);
             e = e->next;
         }
         printf ("\n");
