@@ -13,6 +13,7 @@
 #include <arpa/inet.h>
 #include <stdbool.h>
 #include "zlib.h"
+#include "slab.h"
 
 // sudo apt-get install protobuf-c-compiler libprotobuf-c0-dev zlib1g-dev
 // then compile the protobuf with:
@@ -225,6 +226,7 @@ static bool handle_primitive_block(OSMPBF__PrimitiveBlock *block, PbfReadCallbac
 /* Externally visible function. */
 void pbf_read (const char *filename, PbfReadCallbacks *callbacks) {
     pbf_map(filename);
+    slab_init();
     OSMPBF__HeaderBlock *header = NULL;
     int blobcount = 0;
     phase = PHASE_NODE;
@@ -238,14 +240,14 @@ void pbf_read (const char *filename, PbfReadCallbacks *callbacks) {
         // header prefixed with 4-byte contain network (big-endian) order message length
         int32_t msg_length = ntohl(*((int*)buf)); // TODO shouldn't this be an exact-width type cast?
         buf += sizeof(int32_t);
-        blobh = osmpbf__blob_header__unpack(NULL, msg_length, buf);
+        blobh = osmpbf__blob_header__unpack(&slabAllocator, msg_length, buf);
         buf += msg_length;
         if (blobh == NULL)
             die("error unpacking blob header");
 
         /* read blob data */
         OSMPBF__Blob *blob;
-        blob = osmpbf__blob__unpack(NULL, blobh->datasize, buf);
+        blob = osmpbf__blob__unpack(&slabAllocator, blobh->datasize, buf);
         buf += blobh->datasize;
         if (blobh == NULL)
             die("error unpacking blob data");
@@ -270,6 +272,7 @@ void pbf_read (const char *filename, PbfReadCallbacks *callbacks) {
         if (header == NULL) {
             if (strcmp(blobh->type, "OSMHeader") != 0)
                 die("expected first blob to be a header");
+						// Header block NOT allocated in slab, as we want it to survive accross iterations.
             header = osmpbf__header_block__unpack(NULL, bsize, bdata);
             if (header == NULL)
                 die("failed to read OSM header message from header blob");
@@ -283,20 +286,23 @@ void pbf_read (const char *filename, PbfReadCallbacks *callbacks) {
         }
         
         OSMPBF__PrimitiveBlock *block;
-        block = osmpbf__primitive_block__unpack(NULL, bsize, bdata);
+        block = osmpbf__primitive_block__unpack(&slabAllocator, bsize, bdata);
         if (block == NULL)
             die("error unpacking primitive block");
         break_iteration = handle_primitive_block(block, callbacks);
-        osmpbf__primitive_block__free_unpacked(block, NULL);
+        osmpbf__primitive_block__free_unpacked(block, &slabAllocator);
 
         /* post-iteration cleanup */
         free_blob:
-        osmpbf__blob_header__free_unpacked(blobh, NULL);
-        osmpbf__blob__free_unpacked(blob, NULL);
+        osmpbf__blob_header__free_unpacked(blobh, &slabAllocator);
+        osmpbf__blob__free_unpacked(blob, &slabAllocator);
+        slab_reset();
         if (break_iteration) break;
     }
-    osmpbf__header_block__free_unpacked(header, NULL);
+		// The only thing not allocated by the slab allocator, use default malloc/free.
+    osmpbf__header_block__free_unpacked(header, NULL); 
     pbf_unmap();
+    slab_done();
 }
 
 /* Example way callback that just counts node references. */
