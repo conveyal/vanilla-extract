@@ -18,6 +18,8 @@
 #include "tags.h"
 #include "idtracker.h"
 
+#include "lmdb/libraries/liblmdb/lmdb.h"
+
 // 14 bits -> 1.7km at 45 degrees
 // 13 bits -> 3.4km at 45 degrees
 // at 45 degrees cos(pi/4)~=0.7
@@ -462,6 +464,26 @@ static long nodes_loaded = 0;
 static long ways_loaded = 0;
 static long rels_loaded = 0;
 
+// LMDB state
+static MDB_env *env;
+static MDB_dbi dbi;
+static MDB_val key, data;
+static MDB_txn *txn;
+// static MDB_cursor *cursor;
+// Keep reusing a single Node struct to avoid allocation
+static Node nodeBuffer;
+
+// Handle LMDB error codes
+static inline void err_trap (char* name, int err) {
+  if (err) {
+    printf("%s ERROR: %s\n", name, mdb_strerror(err));
+    exit(err);
+  } else if (name != NULL){
+    printf("%s SUCCESS\n", name);
+  }
+}
+
+  
 /* Node callback handed to the general-purpose PBF loading code. */
 static void handle_node (OSMPBF__Node *node, ProtobufCBinaryData *string_table) {
     if (node->id >= MAX_NODE_ID) {
@@ -473,9 +495,19 @@ static void handle_node (OSMPBF__Node *node, ProtobufCBinaryData *string_table) 
     // lat and lon are in nanodegrees
     double lat = node->lat * 0.000000001;
     double lon = node->lon * 0.000000001;
-    to_coord(&(nodes[node->id].coord), lat, lon);
-    TagSubfile *ts = tag_subfile_for_id(node->id, NODE);
-    nodes[node->id].tags = write_tags (node->keys, node->vals, node->n_keys, string_table, ts);
+    
+    to_coord(&(nodeBuffer.coord), lat, lon);
+    // TagSubfile *ts = tag_subfile_for_id(node->id, NODE);
+    // nodeBuffer.tags = write_tags (node->keys, node->vals, node->n_keys, string_table, ts);
+
+    key.mv_size = sizeof(uint64_t);
+    key.mv_data = &(node->id);
+    data.mv_size = sizeof(Node);
+    data.mv_data = &nodeBuffer;
+    // printf("key: %llu \n", node->id);
+    // TODO check result code, ensure ascending IDs before using MDB_APPEND
+    err_trap(NULL, mdb_put(txn, dbi, &key, &data, MDB_APPEND));
+
     nodes_loaded++;
     if (nodes_loaded % 1000000 == 0)
         fprintf(stderr, "loaded %ldM nodes\n", nodes_loaded / 1000000);
@@ -803,28 +835,50 @@ int main (int argc, const char * argv[]) {
 
     /* Memory-map files or create shared memory objects for each OSM element type, 
     and for references between them. */
-    grid        = map_file("grid",        0, sizeof(Grid));
-    ways        = map_file("ways",        0, sizeof(Way)       * MAX_WAY_ID);
-    nodes       = map_file("nodes",       0, sizeof(Node)      * MAX_NODE_ID);
-    node_refs   = map_file("node_refs",   0, sizeof(int64_t)   * MAX_NODE_REFS);
-    way_blocks  = map_file("way_blocks",  0, sizeof(WayBlock)  * MAX_WAY_BLOCKS);
-    relations   = map_file("relations",   0, sizeof(Relation)  * MAX_REL_ID);
-    rel_members = map_file("rel_members", 0, sizeof(RelMember) * MAX_REL_MEMBERS);
+    // NOTE mapping all these large files caused significant pauses in the LMDB loading.
+    // Not mapping them gave something like a 20% speedup.
+    
+    // grid        = map_file("grid",        0, sizeof(Grid));
+    // ways        = map_file("ways",        0, sizeof(Way)       * MAX_WAY_ID);
+    // nodes       = map_file("nodes",       0, sizeof(Node)      * MAX_NODE_ID);
+    // node_refs   = map_file("node_refs",   0, sizeof(int64_t)   * MAX_NODE_REFS);
+    // way_blocks  = map_file("way_blocks",  0, sizeof(WayBlock)  * MAX_WAY_BLOCKS);
+    // relations   = map_file("relations",   0, sizeof(Relation)  * MAX_REL_ID);
+    // rel_members = map_file("rel_members", 0, sizeof(RelMember) * MAX_REL_MEMBERS);
 
     if (ACTION_LOAD == action) {
 
         /* LOAD INTO DATABASE */
         const char *filename = argv[2];
         PbfReadCallbacks callbacks = {
-            .way  = &handle_way,
             .node = &handle_node,
-            .relation = &handle_relation
+            // .node = NULL,
+            // .way  = &handle_way,
+            // .relation = &handle_relation
+            .way  = NULL,
+            .relation = NULL
         };
         /* Request an exclusive write lock, blocking while reads complete. */
         fprintf(stderr, "Acquiring exclusive write lock on database.\n");
         flock(lock_fd, LOCK_EX);
+        
+        ////////// LMDB
+        err_trap("Env create", mdb_env_create(&env));
+        err_trap("Env size  ", mdb_env_set_mapsize(env, 1024L * 1024 * 1024 * 20)); // 20GB maximum map size
+        err_trap("Env open  ", mdb_env_open(env, "./testdb", MDB_WRITEMAP, 0664));
+        err_trap("Txn begin ", mdb_txn_begin(env, NULL, 0, &txn));
+        err_trap("Dbi open  ", mdb_dbi_open(txn, NULL, MDB_INTEGERKEY, &dbi));
+        //////////
+        
         pbf_read (filename, &callbacks); // we could just pass the callbacks by value
-        fillFactor();
+        
+        ////////// LMDB
+        err_trap("Txn commit", mdb_txn_commit(txn));
+        mdb_env_close(env);
+        //////////
+        
+        // Disable grid summary since grid is not mapped/allocated
+        // fillFactor();
         /* Release exclusive write lock, allowing reads to begin. */
         flock(lock_fd, LOCK_UN);
         fprintf(stderr, "loaded %ld nodes, %ld ways, and %ld relations total.\n", 
