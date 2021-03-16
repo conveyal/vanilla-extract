@@ -28,38 +28,11 @@
 /* The width and height of the grid root is 2^bits. */
 #define GRID_DIM (1 << GRID_BITS)
 
-/*
-  https://taginfo.openstreetmap.org/reports/database_statistics
-  https://osmstats.neis-one.org/?item=elements
-  It would be more helpful to express the tag counts as distributions not averages.
-
-                     Count           MaxId    Deleted   Notes 
-  Nodes      6 749 584 713   8 488 293 903      20.5%   avg 3.2 tags on the 2.5% that have tags
-  Ways         747 345 392     913 770 712      18.2%   avg 2.3 tags per way
-  Relations      8 744 546      12 401 793      29.5%   avg 3.9 tags per relation
-  
-  Node to way ratio is 9, but this includes ways like coastlines and political boundaries.
-  Way to relation ratio is 84, though relations also directly include nodes.
-*/
-#define MAX_NODE_ID    10000000000
-#define MAX_WAY_ID      1000000000
-#define MAX_REL_MEMBERS  100000000
-#define MAX_REL_ID        20000000
-
-/* Assume there are as many active node references as there are active and deleted nodes. */
-// This is going to fail - many nodes are referenced twice, and our node ref offsets are uint32s.
-// These could be addressed in blocks like ways, which can be referenced from both ways and grid cells.
-// Or the ID space of ways can be partitioned, yielding multiple node_refs files.
-#define MAX_NODE_REFS MAX_NODE_ID
-
 /* Way reference block size is based on the typical number of ways per grid cell. */
 #define WAY_BLOCK_SIZE 32
 
 /* Assume one-fifth as many blocks as cells in the grid. Observed number is ~15000000 blocks. */
 #define MAX_WAY_BLOCKS (GRID_DIM * GRID_DIM / 5)
-
-/* If true, then loaded file should not be persisted to disk. */
-static bool in_memory;
 
 /*
   Define the sequence in which elements are read and written, while allowing element types as
@@ -194,20 +167,20 @@ void die (char *s) {
 /* Make a filename under the database directory, performing some checks. */
 static char path_buf[512];
 static char *make_db_path (const char *name, uint32_t subfile) {
-    if (strlen(name) >= sizeof(path_buf) - strlen(database_path) - 12)
-        die ("Name too long.");
-    if (in_memory) {
-        sprintf (path_buf, "vex_%s.%d", name, subfile);
+    if (strlen(name) >= sizeof(path_buf) - strlen(database_path) - 12) {
+        die("Name too long.");
+    }
+    size_t path_length = strlen(database_path);
+    if (path_length == 0) {
+        die("Database path must be non-empty.");
+    }
+    if (database_path[path_length - 1] == '/') {
+        path_length -= 1;
+    }
+    if (subfile == 0) {
+        sprintf (path_buf, "%.*s/%s", (int) path_length, database_path, name);
     } else {
-        size_t path_length = strlen(database_path);
-        if (path_length == 0)
-            die ("Database path must be non-empty.");
-        if (database_path[path_length - 1] == '/')
-            path_length -= 1;
-        if (subfile == 0)
-            sprintf (path_buf, "%.*s/%s", (int)path_length, database_path, name);
-        else
-            sprintf (path_buf, "%.*s/%s.%03d", (int)path_length, database_path, name, subfile);
+        sprintf (path_buf, "%.*s/%s.%03d", (int) path_length, database_path, name, subfile);
     }
     return path_buf;
 }
@@ -231,22 +204,20 @@ static char *make_db_path (const char *name, uint32_t subfile) {
   Creating 100GB of empty file by calling truncate() does not increase the disk usage.
   The files appear to have their full size using 'ls', but 'du' reveals that no blocks are in use.
 */
-void *map_file(const char *name, uint32_t subfile, size_t size) {
+void *map_file (const char *name, uint32_t subfile, size_t size) {
     make_db_path (name, subfile);
     int fd;
-    if (in_memory) {
-        fprintf(stderr, "Opening shared memory object '%s' of size %sB.\n", path_buf, human(size));
-        fd = shm_open(path_buf, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
-    } else {
-        fprintf(stderr, "Mapping file '%s' of size %sB.\n", path_buf, human(size));
-        // including O_TRUNC causes much slower write (swaps pages in?)
-        fd = open(path_buf, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
-    }
+    fprintf(stderr, "Mapping file '%s' of size %sB.\n", path_buf, human(size));
+    // including O_TRUNC causes much slower write (swaps pages in?)
+    fd = open(path_buf, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
     void *base = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    if (base == MAP_FAILED)
+    if (base == MAP_FAILED) {
         die("Could not memory map file.");
-    if (ftruncate (fd, size - 1)) // resize file
-        die ("Error resizing file.");
+    }
+    // Resize file
+    if (ftruncate (fd, size - 1)) {
+        die("Error resizing file.");
+    }
     return base;
 }
 
@@ -494,12 +465,6 @@ static struct {
 
 /* Node callback handed to the general-purpose PBF loading code. */
 static void handle_node (OSMPBF__Node *node, ProtobufCBinaryData *string_table) {
-    if (node->id >= MAX_NODE_ID) {
-        die("OSM data contains nodes with larger IDs than expected.");
-    }
-    if (ways_loaded > 0) {
-        die("All nodes must appear before any ways in input file.");
-    }
     // lat and lon are in nanodegrees
     double lat = node->lat * 0.000000001;
     double lon = node->lon * 0.000000001;
@@ -530,9 +495,6 @@ static uint8_t tempWay[NODE_BUF_LEN];
   All nodes must come before any ways in the input for this to work.
 */
 static void handle_way (OSMPBF__Way *way, ProtobufCBinaryData *string_table) {
-    if (way->id >= MAX_WAY_ID) {
-        die("OSM data contains ways with larger IDs than expected.");
-    }
     // Pointer to next output byte in the output buffer.
     uint8_t *b = tempWay;
     // Check n_refs is sane (>1)
@@ -567,15 +529,14 @@ static void handle_way (OSMPBF__Way *way, ProtobufCBinaryData *string_table) {
     }
 }
 
+#define MAX_REL_MEMBERS 100000000
+
 /*
   Relation callback handed to the general-purpose PBF loading code.
   All nodes and ways must come before relations in the input file for this to work.
   Copies one OSMPBF__Relation into a VEx Relation and inserts it in the grid spatial index.
 */
 static void handle_relation (OSMPBF__Relation* relation, ProtobufCBinaryData *string_table) {
-    if (relation->id >= MAX_REL_ID) {
-        die("OSM data contains relations with larger IDs than expected.");
-    }
     if (relation->n_memids == 0) return; // logic below expects at least one member reference
     Relation *r = &(relations[relation->id]); // the Vex struct into which we are copying the PBF relation
     r->member_offset = n_rel_members;
@@ -820,11 +781,11 @@ int main (int argc, const char * argv[]) {
     We don't want to accidentally destroy two hours of PBF loading, and we don't want to re-open an 
     existing database for writing (that's not supported yet and causes undefined behavior). */
     database_path = argv[1];
-    in_memory = (strcmp(database_path, "memory") == 0);
-    if (ACTION_LOAD == action && !in_memory) {
+    if (ACTION_LOAD == action) {
         int err = mkdir(database_path, 0777);
-        if (err == -1) die ("Could not create database. Perhaps the directory already exists "
-            "or you have insufficient permissions.");
+        if (err == -1) {
+            die("Could not create database. Directory already exists or insufficient permissions?");
+        }
     }
 
     /* Open or create the lock file, which will prevent database writes from happening during reads.

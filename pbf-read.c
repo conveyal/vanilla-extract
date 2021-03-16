@@ -277,6 +277,7 @@ static bool handle_primitive_block (OSMPBF__PrimitiveBlock *block) {
                     node.n_keys = kv1;
                     node.n_vals = kv1;
                     kv0++; // skip zero length string indicating end of k-v pairs for this node
+                    // TODO should that be validated?
                     (*(callbacks.node))(&node, string_table);
                 }
             }
