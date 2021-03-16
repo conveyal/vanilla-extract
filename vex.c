@@ -406,6 +406,14 @@ static void ts_write(ProtobufCBinaryData *bd, TagSubfile *ts) {
     ts->pos += bd->len;
 }
 
+/* Write a ProtobufCBinaryData out to buffer, prefixed with its length as an unsigned 64 bit varint. */
+static size_t bd_write (uint8_t *buf, ProtobufCBinaryData *bd) {
+    uint8_t *dst = buf + uint64_pack(bd->len, buf);
+    uint8_t *src = bd->data;
+    for (int i = 0; i < bd->len; i++) *(dst++) = *(src++);
+    return dst - buf;
+}
+
 /* Write a single char out to a TagSubfile, updating the subfile position accordingly. */
 static void ts_putc(char c, TagSubfile *ts) {
     ts->data[(ts->pos)++] = c;
@@ -413,50 +421,45 @@ static void ts_putc(char c, TagSubfile *ts) {
 
 /*
   Given parallel tag key and value arrays of length n containing string table indexes,
-  write compacted lists of key=value pairs to a file which do not require the string table.
-  Returns the byte offset of the beginning of the new tag list within that file.
+  write compacted lists of key=value pairs to a buffer that does not require the string table.
+  Returns the number of bytes written.
 */
-static uint32_t write_tags (uint32_t *keys, uint32_t *vals, int n, ProtobufCBinaryData *string_table, TagSubfile *ts) {
-    /* If there are no tags, point to index 0, which contains a single tag list terminator char. */
-    if (n == 0) return 0;
-    uint64_t position = ts->pos;
-    if (position > UINT32_MAX) die ("A tag file index has overflowed.");
-    int n_tags_written = 0;
+static uint32_t write_tags (uint32_t *keys, uint32_t *vals, int n, ProtobufCBinaryData *string_table, uint8_t *buf, size_t buflen) {
+    // Pointer to next output byte in the output buffer.
+    uint8_t *b = buf;
+    // First store the number of tags that will follow, even when the number is zero.
+    b += uint64_pack (n, b);
     for (int t = 0; t < n; t++) {
         ProtobufCBinaryData key = string_table[keys[t]];
         ProtobufCBinaryData val = string_table[vals[t]];
-        // skip unneeded keys
+        int8_t code;
+        // Skip unneeded keys that are very common and voluminous
         if (memcmp("created_by",  key.data, key.len) == 0 ||
             memcmp("import_uuid", key.data, key.len) == 0 ||
             memcmp("attribution", key.data, key.len) == 0 ||
             memcmp("source",      key.data, 6) == 0 ||
             memcmp("tiger:",      key.data, 6) == 0) {
-            continue;
+            code = 0; // TODO completely skip these tags (count them before output). Just record a zero for now.
+        } else {
+            code = encode_tag(key, val);
         }
-        int8_t code = encode_tag(key, val);
-        // Code always written out to encode a key and/or a value, or indicate they are free text.
-        ts_putc(code, ts);
+        // Always write out the code, to encode a key-value pair, a key with freetext value, or completely freetext.
+        *(b++) = code;
         if (code == 0) {
-            // Code 0 means zero-terminated key and value are written out in full.
+            // Code 0 means key and value are written out in full as freetext.
             // Saving only tags with 'known' keys (nonzero codes) cuts file sizes in half.
             // Some are reduced by over 4x, which seem to contain a lot of bot tags.
-            // continue;
-            ts_write(&key, ts);
-            ts_putc(0, ts);
-            ts_write(&val, ts);
-            ts_putc(0, ts);
+            b += bd_write(b, &key);
+            b += bd_write(b, &val);
         } else if (code < 0) {
             // Negative code provides key lookup, but value is written as zero-terminated free text.
-            ts_write(&val, ts);
-            ts_putc(0, ts);
+            b += bd_write(b, &val);
         }
-        n_tags_written++;
+        if (b > buf + buflen) {
+            die("Tag buffer overflow.");
+        }
     }
-    /* If all tags were skipped, return the index of the shared zero-length list. */
-    if (n_tags_written == 0) return 0;
-    /* The tag list is terminated with a single character. TODO maybe use 0 as terminator. */
-    ts_putc(INT8_MAX, ts);
-    return position;
+    return b - buf;
 }
 
 /* Count the number of nodes and ways loaded, just for progress reporting. */
@@ -466,12 +469,10 @@ static long rels_loaded = 0;
 
 // LMDB state
 static MDB_env *env;
-static MDB_dbi dbi;
+static MDB_dbi dbi_nodes, dbi_ways, dbi_relations;
 static MDB_val key, data;
 static MDB_txn *txn;
 // static MDB_cursor *cursor;
-// Keep reusing a single Node struct to avoid allocation
-static Node nodeBuffer;
 
 // Handle LMDB error codes
 static inline void err_trap (char* name, int err) {
@@ -483,7 +484,14 @@ static inline void err_trap (char* name, int err) {
   }
 }
 
-  
+// Keep reusing a single struct. The end with tags is variable length. 
+// Store only up to the end of the used portion of the tags buffer.
+#define NODE_BUF_LEN (1024 * 1024) 
+static struct {
+    coord_t coord; 
+    uint8_t tags[NODE_BUF_LEN];
+} tempNode;
+
 /* Node callback handed to the general-purpose PBF loading code. */
 static void handle_node (OSMPBF__Node *node, ProtobufCBinaryData *string_table) {
     if (node->id >= MAX_NODE_ID) {
@@ -495,24 +503,27 @@ static void handle_node (OSMPBF__Node *node, ProtobufCBinaryData *string_table) 
     // lat and lon are in nanodegrees
     double lat = node->lat * 0.000000001;
     double lon = node->lon * 0.000000001;
-    
-    to_coord(&(nodeBuffer.coord), lat, lon);
-    // TagSubfile *ts = tag_subfile_for_id(node->id, NODE);
-    // nodeBuffer.tags = write_tags (node->keys, node->vals, node->n_keys, string_table, ts);
+            
+    to_coord(&(tempNode.coord), lat, lon);
+    size_t nTagBytes = write_tags(node->keys, node->vals, node->n_keys, string_table, tempNode.tags, NODE_BUF_LEN);
 
     key.mv_size = sizeof(uint64_t);
     key.mv_data = &(node->id);
-    data.mv_size = sizeof(Node);
-    data.mv_data = &nodeBuffer;
+    data.mv_size = sizeof(coord_t) + nTagBytes;
+    data.mv_data = &tempNode;
     // printf("key: %llu \n", node->id);
     // TODO check result code, ensure ascending IDs before using MDB_APPEND
-    err_trap(NULL, mdb_put(txn, dbi, &key, &data, MDB_APPEND));
+    err_trap(NULL, mdb_put(txn, dbi_nodes, &key, &data, MDB_APPEND));
 
     nodes_loaded++;
-    if (nodes_loaded % 1000000 == 0)
-        fprintf(stderr, "loaded %ldM nodes\n", nodes_loaded / 1000000);
+    if (nodes_loaded % 1000000 == 0) {
+        fprintf(stderr, "Loaded %ldM nodes.\n", nodes_loaded / 1000000);
+    }
     //printf ("---\nlon=%.5f lat=%.5f\nx=%d y=%d\n", lon, lat, nodes[node->id].x, nodes[node->id].y);
 }
+
+// Buffer bytes representing one way out to database.
+static uint8_t tempWay[NODE_BUF_LEN];
 
 /*
   Way callback handed to the general-purpose PBF loading code.
@@ -522,48 +533,37 @@ static void handle_way (OSMPBF__Way *way, ProtobufCBinaryData *string_table) {
     if (way->id >= MAX_WAY_ID) {
         die("OSM data contains ways with larger IDs than expected.");
     }
-    /*
-       Copy node references into a sub-segment of one big array, reversing the PBF delta coding so
-       they are absolute IDs. All the refs within a way or relation are always known at once, so
-       we can use exact-length lists (unlike the lists of ways within a grid cell).
-       Each way stores the index of the first node reference in its list, and a negative node
-       ID is used to signal the end of the list.
-    */
-    ways[way->id].node_ref_offset = n_node_refs;
-    //fprintf(stderr, "WAY %ld\n", way->id);
-    //fprintf(stderr, "node ref offset %d\n", ways[way->id].node_ref_offset);
-    int64_t node_id = 0;
+    // Pointer to next output byte in the output buffer.
+    uint8_t *b = tempWay;
+    // Check n_refs is sane (>1)
+    if (way->n_refs < 2) {
+        fprintf(stderr, "Way %lld has less than two nodes, skipping.\n", way->id);
+        return;
+    }        
+    // First store the number of nodes that will follow.
+    b += uint64_pack (way->n_refs, b);
+    // Then copy over delta coded varint node refs.
     for (int r = 0; r < way->n_refs; r++, n_node_refs++) {
-        node_id += way->refs[r]; // node refs are delta coded
-        node_refs[n_node_refs] = node_id;
-        if (n_node_refs == UINT32_MAX) die ("Node refs index is about to overflow.");
+        // node refs are delta coded and we're going to keep them that way. 
+        // note we could just copy the raw packed PBF data.
+        b += sint64_pack (way->refs[r], b);
     }
-    node_refs[n_node_refs - 1] *= -1; // Negate last node ref to signal end of list.
-    /* Index this way, as being in the grid cell of its first node. */
-    uint32_t wbi = get_grid_way_block(&(nodes[way->refs[0]]));
-    WayBlock *wb = &(way_blocks[wbi]);
-    /* If the last node ref is non-negative, no free slots remain. Chain a new empty block. */
-    if (wb->refs[WAY_BLOCK_SIZE - 1] >= 0) {
-        uint32_t new_way_block_index = new_way_block();
-        // Insert new block at head of list to avoid later scanning though large swaths of memory.
-        wb = &(way_blocks[new_way_block_index]);
-        wb->next = wbi;
-        set_grid_way_block(&(nodes[way->refs[0]]), new_way_block_index);
-    }
-    /* We are now certain to have a free slot in the current block. */
-    int nfree = wb->refs[WAY_BLOCK_SIZE - 1];
-    /* A final ref < 0 gives the number of free slots in this block. */
-    if (nfree >= 0) die ("Final ref was expected to be negative, indicating the number of free slots.");
-    int free_idx = WAY_BLOCK_SIZE + nfree;
-    wb->refs[free_idx] = way->id;
-    /* If this was not the last available slot, reduce number of free slots in this block by one. */
-    if (nfree != -1) (wb->refs[WAY_BLOCK_SIZE - 1])++;
+    b += write_tags(way->keys, way->vals, way->n_keys, string_table, b, NODE_BUF_LEN);
+
+    // TODO Handle spatial indexing, possibly still using grid or with duplicate keys in LMDB.
+
+    //// LMDB
+    key.mv_size = sizeof(uint64_t);
+    key.mv_data = &(way->id);
+    data.mv_size = b - tempWay;
+    data.mv_data = &tempWay;
+    // TODO check result code, check ascending IDs before using MDB_APPEND
+    err_trap(NULL, mdb_put(txn, dbi_ways, &key, &data, MDB_APPEND));
+    ////
+    
     ways_loaded++;
-    /* Save tags to compacted tag array, and record the index where that tag list begins. */
-    TagSubfile *ts = tag_subfile_for_id(way->id, WAY);
-    ways[way->id].tags = write_tags (way->keys, way->vals, way->n_keys, string_table, ts);
     if (ways_loaded % 1000000 == 0) {
-        fprintf(stderr, "loaded %ldM ways\n", ways_loaded / 1000000);
+        fprintf(stderr, "Loaded %ldM ways.\n", ways_loaded / 1000000);
     }
 }
 
@@ -597,7 +597,8 @@ static void handle_relation (OSMPBF__Relation* relation, ProtobufCBinaryData *st
     (rm - 1)->id *= -1; // Negate the last relation member id to signal the end of the list
     /* Save tags to compacted tag array, and record the index where this relation's tag list begins. */
     TagSubfile *ts = tag_subfile_for_id (relation->id, RELATION);
-    r->tags = write_tags (relation->keys, relation->vals, relation->n_keys, string_table, ts);
+    // TODO REPLACE RELATION TAG WRITING
+    // r->tags = write_tags (relation->keys, relation->vals, relation->n_keys, string_table, ts);
     /* Insert this relation at the head of a linked list in its containing spatial index grid cell.
        The GridCell's head field is initially set to zero since it is in a new mmapped file. */
     GridCell *grid_cell = get_grid_cell_for_relation (r);
@@ -851,11 +852,11 @@ int main (int argc, const char * argv[]) {
         /* LOAD INTO DATABASE */
         const char *filename = argv[2];
         PbfReadCallbacks callbacks = {
-            .node = &handle_node,
-            // .node = NULL,
-            // .way  = &handle_way,
+            //.node = &handle_node,
+            .node = NULL,
+            .way  = &handle_way,
             // .relation = &handle_relation
-            .way  = NULL,
+            // .way  = NULL,
             .relation = NULL
         };
         /* Request an exclusive write lock, blocking while reads complete. */
@@ -863,16 +864,22 @@ int main (int argc, const char * argv[]) {
         flock(lock_fd, LOCK_EX);
         
         ////////// LMDB
-        err_trap("Env create", mdb_env_create(&env));
-        err_trap("Env size  ", mdb_env_set_mapsize(env, 1024L * 1024 * 1024 * 20)); // 20GB maximum map size
-        err_trap("Env open  ", mdb_env_open(env, "./testdb", MDB_WRITEMAP, 0664));
-        err_trap("Txn begin ", mdb_txn_begin(env, NULL, 0, &txn));
-        err_trap("Dbi open  ", mdb_dbi_open(txn, NULL, MDB_INTEGERKEY, &dbi));
+        err_trap("Env create    ", mdb_env_create(&env));
+        err_trap("Env maxsize   ", mdb_env_set_mapsize(env, 1024L * 1024 * 1024 * 20)); // 20GB maximum map size
+        err_trap("Env maxdbs    ", mdb_env_set_maxdbs(env, 5));
+        err_trap("Env open      ", mdb_env_open(env, "./testdb", MDB_WRITEMAP, 0664));
+        err_trap("Txn begin     ", mdb_txn_begin(env, NULL, 0, &txn));
+        err_trap("Dbi open nodes", mdb_dbi_open(txn, "nodes", MDB_INTEGERKEY | MDB_CREATE, &dbi_nodes));
+        err_trap("Dbi open ways ", mdb_dbi_open(txn, "ways", MDB_INTEGERKEY | MDB_CREATE, &dbi_ways));
+        err_trap("Dbi open rels ", mdb_dbi_open(txn, "relations", MDB_INTEGERKEY | MDB_CREATE, &dbi_relations));
         //////////
-        
-        pbf_read (filename, &callbacks); // we could just pass the callbacks by value
+
+        // Callbacks could also be static variables, why not.
+        pbf_read (filename, callbacks);
         
         ////////// LMDB
+        // Should we commit more often? Any downside to one huge commit? Can we disable transactions?
+        fprintf(stderr, "Committing transaction...\n");
         err_trap("Txn commit", mdb_txn_commit(txn));
         mdb_env_close(env);
         //////////

@@ -34,7 +34,7 @@ typedef struct {
 } RelMember;
 
 /* PUBLIC READ FUNCTIONS */
-void pbf_read(const char *filename, PbfReadCallbacks *callbacks);
+void pbf_read(const char *filename, PbfReadCallbacks callbacks);
 
 /* PUBLIC WRITE FUNCTIONS */
 void pbf_write_begin(FILE *out);

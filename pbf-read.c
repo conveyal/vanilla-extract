@@ -1,4 +1,4 @@
-/* pbf.c */
+/* pbf-read.c */
 #include "pbf.h"
 #include "fileformat.pb-c.h"
 #include "osmformat.pb-c.h"
@@ -23,6 +23,7 @@
 // The osmpbf-dev debian package (https://github.com/scrosby/OSM-binary) is for C++ but provides
 // the protobuf definition files.
 
+// TODO make reusable in other modules (create util module) along with human() function.
 static void die(const char *msg) {
     fprintf(stderr, "%s\n", msg);
     exit(EXIT_FAILURE);
@@ -32,66 +33,81 @@ static void die(const char *msg) {
 #define PHASE_NODE 0
 #define PHASE_WAY 1
 #define PHASE_RELATION 2
-static int phase;
 
+/* Private PBF reading state variables. */
+static uint32_t curr_block;   // Current block number being read in input PBF
+static void *curr_block_pos;  // Pointer to first byte in the current block
+static int curr_phase;        // The element type at the current position in the file
+static void *curr_pos;        // Pointer to the next byte to be read in the input PBF
+
+static uint32_t mark_block;   // Block to which we can rewind to commence slow_seek
+static void *mark_block_pos;  // Pointer to the first byte in the marked block
+static int mark_phase;        // Element type of the first primitive group in the marked block
+
+/* The memory-mapped input file and its size. */
 static void *map;
 static size_t map_size;
 
+/* Memory-map the input file before reading it. */
 static void pbf_map(const char *filename) {
     int fd = open(filename, O_RDONLY);
-    if (fd == -1)
-        die("could not find input file");
+    if (fd == -1) {
+        die("Could not find input file.");
+    }
     struct stat st;
-    if (stat(filename, &st) == -1)
-        die("could not stat input file");
+    if (stat(filename, &st) == -1) {
+        die("Could not stat input file.");
+    }
     map = mmap((void*)0, st.st_size, PROT_READ, MAP_SHARED, fd, 0);
     map_size = st.st_size;
-    if (map == (void*)(-1))
-        die("could not map input file");
+    if (map == (void*)(-1)) {
+        die("Could not map input file.");
+    }
 }
 
+/* Release the memory map of the input file when finished reading it. */
 static void pbf_unmap() {
+    // TODO check success like when mapping
     munmap(map, map_size);
 }
 
-// "The uncompressed length of a Blob *should* be less than 16 MiB (16*1024*1024 bytes)
-// and *must* be less than 32 MiB."
+// OSMPBF spec says: "The uncompressed length of a Blob *should* be less than 16 MiB and *must* be less than 32 MiB."
 #define MAX_BLOB_SIZE_UNCOMPRESSED 32 * 1024 * 1024
+// Reuse this single large buffer for every block.
 static unsigned char zbuf[MAX_BLOB_SIZE_UNCOMPRESSED];
 
-// ZLIB has utility (un)compress functions that work on buffers.
+/* Return the size of the inflated data. */
+// ZLIB has utility (un)compress functions that work on buffers. Maybe use those instead of hand-rolling.
 static int zinflate(ProtobufCBinaryData *in, unsigned char *out) {
-    int ret;
-
-    /* initialize inflate state */
+    /* Initialize inflate state. */
     z_stream strm;
     strm.zalloc = Z_NULL;
     strm.zfree = Z_NULL;
     strm.opaque = Z_NULL;
     strm.avail_in = 0;
     strm.next_in = Z_NULL;
-    ret = inflateInit(&strm);
-    if (ret != Z_OK)
-        die("zlib init failed");
-
-    /* ProtobufCBinaryData is {size_t len; uint8_t *data} */
+    int ret = inflateInit(&strm);
+    if (ret != Z_OK) {
+        die("zlib init failed.");
+    }
+    /* Our input ProtobufCBinaryData is {size_t len; uint8_t *data}. */
     strm.avail_in = in->len;
     strm.next_in = in->data;
     strm.avail_out = MAX_BLOB_SIZE_UNCOMPRESSED;
     strm.next_out = out;
-
     ret = inflate(&strm, Z_NO_FLUSH);
-    // check ret
-    (void)inflateEnd(&strm);
+    if (ret != Z_STREAM_END) {
+        die("zlib inflate failed to reach end of stream.");
+    }
+    ret = inflateEnd(&strm);
+    if (ret != Z_OK) {
+        die("zlib inflateEnd failed.");
+    }
     return MAX_BLOB_SIZE_UNCOMPRESSED - strm.avail_out;
-
 }
 
-/* 
-  Enforce (node, way, relation) ordering, and bail out early when possible. 
-  Returns true if loading should terminate due to incorrect ordering or just to save time.
-*/
-static bool enforce_ordering (OSMPBF__PrimitiveGroup *group, PbfReadCallbacks *callbacks) {
+/* Given an already unpacked primitive group, determine what element type it contains and check some invariants. */
+static int detect_element_type (OSMPBF__PrimitiveGroup *group) {
     int n_element_types = 0;
     int element_type = -1;
     if (group->dense || group->n_nodes > 0) {
@@ -106,62 +122,118 @@ static bool enforce_ordering (OSMPBF__PrimitiveGroup *group, PbfReadCallbacks *c
         n_element_types += 1;
         element_type = PHASE_RELATION;
     }
-    if (n_element_types > 1) {
-        fprintf (stderr, "ERROR: Block should contain only one element type (nodes, ways, or relations).\n");
+    if (n_element_types != 1) {
+        die("Each primitive group should contain exactly one element type (nodes, ways, or relations).");
+    }
+    return element_type;
+}
+
+// Make callbacks available deep in call stack. Access/pass by value not reference to encourage optimizations.
+static PbfReadCallbacks callbacks;
+
+static bool no_callback_for_phase () {
+    return (curr_phase == PHASE_NODE && !(callbacks.node))
+           || (curr_phase == PHASE_WAY && !(callbacks.way))
+           || (curr_phase == PHASE_RELATION && !(callbacks.relation));
+}
+
+static bool no_more_callbacks () {
+    if (curr_phase == PHASE_NODE &&
+        callbacks.node == NULL && callbacks.way == NULL && callbacks.relation == NULL) {
+        fprintf (stderr, "Skipping the rest of the PBF file, no callbacks were defined.\n");
         return true;
     }
-    if (element_type < phase) {
-        fprintf (stderr, "ERROR: PBF blocks did not follow the order nodes, ways, relations.\n");
+    if (curr_phase == PHASE_WAY && callbacks.way == NULL && callbacks.relation == NULL) {
+        fprintf (stderr, "Skipping the rest of the PBF file, only a way callback was defined.\n");
         return true;
     }
-    if (element_type > phase) {
-        phase = element_type;
-        if (phase == PHASE_NODE && 
-            callbacks->node == NULL && callbacks->way == NULL && callbacks->relation == NULL) {
-            fprintf (stderr, "Skipping the rest of the PBF file, no callbacks were defined.\n");
-            return true;
-        } 
-        if (phase == PHASE_WAY && callbacks->way == NULL && callbacks->relation == NULL) {
-            fprintf (stderr, "Skipping the rest of the PBF file, only a way callback was defined.\n");
-            return true;
-        } 
-        if (phase == PHASE_RELATION && callbacks->relation == NULL) {
-            fprintf (stderr, "Skipping the end of the PBF file, no relation callback is defined.\n");
-            return true;
-        } 
+    if (curr_phase == PHASE_RELATION && callbacks.relation == NULL) {
+        fprintf (stderr, "Skipping the rest of the PBF file, no relation callback is defined.\n");
+        return true;
     }
-    /* Phase stayed the same or advanced without triggering an early exit. */
     return false;
 }
 
+/* Enforce (node, way, relation) ordering, and return true when we pass from one phase to the next. */
+// rename to detect_phase_transition?
+static bool enforce_ordering (OSMPBF__PrimitiveGroup *group) {
+    int element_type = detect_element_type(group);
+    if (element_type < curr_phase) {
+        die ("PBF blocks did not follow the order nodes, ways, relations.");
+    }
+    // Move into a new phase if we detected an element type that should come after the current phase.
+    if (element_type > curr_phase) {
+        curr_phase = element_type;
+        return true;
+    } else {
+        return false;
+    }
+}
+
+// If true, skip over many blocks at a time to seek to other element types.
+// We only need to support the transition reading -> fast_forward -> slow_seek, not returning to fast_forward.
+// With only three sections to the file and the ability bail out when no callbacks are defined for the rest of the file,
+// any fast-forwarded sections are always contiguous.
+static bool fast_forward;
+static bool slow_seek;
+
 /* Tags are stored in a string table at the PrimitiveBlock level. */
 #define MAX_TAGS 256
-static bool handle_primitive_block(OSMPBF__PrimitiveBlock *block, PbfReadCallbacks *callbacks) {
+static bool handle_primitive_block (OSMPBF__PrimitiveBlock *block) {
     ProtobufCBinaryData *string_table = block->stringtable->s;
     int32_t granularity = block->has_granularity ? block->granularity : 100;
     int64_t lat_offset = block->has_lat_offset ? block->lat_offset : 0;
     int64_t lon_offset = block->has_lon_offset ? block->lon_offset : 0;
     // fprintf(stderr, "pblock with granularity %d and offsets %d, %d\n", granularity, lat_offset, lon_offset);
-    // It seems like a block often contains only one group.
+    // All blocks appear to contain only one group.
+    if (block->n_primitivegroup != 1) {
+        printf("Unusual number of primitive groups: %zu\n", block->n_primitivegroup);
+    }
     for (int g = 0; g < block->n_primitivegroup; ++g) {
         OSMPBF__PrimitiveGroup *group = block->primitivegroup[g];
-        if (enforce_ordering (group, callbacks)) {
-            return true; // signal early exit due to improper ordering or callbacks were exhausted
-        }
-        // fprintf(stderr, "pgroup with %d nodes, %d dense nodes, %d ways, %d relations\n",  group->n_nodes,
-        //     group->dense ? group->dense->n_id : 0, group->n_ways, group->n_relations);
-        if (callbacks->way) {
-            for (int w = 0; w < group->n_ways; ++w) {
-                OSMPBF__Way *way = group->ways[w];
-                (*(callbacks->way))(way, string_table);
+        if (enforce_ordering (group)) {
+            // Transition has occurred from one element type to another.
+            if (fast_forward) {
+                // Rewind to last known block of previous type and process at normal speed.
+                fprintf(stderr, "Rewinding to block number %dk.\n", mark_block/1000);
+                fast_forward = false;
+                slow_seek = true;
+                curr_block = mark_block;
+                curr_pos = mark_block_pos;
+                curr_phase = mark_phase;
+                return false; // Do not end processing, continue iteration over blocks.
+            }
+            if (no_more_callbacks()) {
+                return true; // End file processing early, no callbacks are defined for the rest of the file.
             }
         }
-        if (callbacks->node) {
+        if (no_callback_for_phase()) {
+            if (!slow_seek) {
+                if (!fast_forward) {
+                    fprintf(stderr, "Fast forwarding...\n");
+                    fast_forward = true;
+                }
+                mark_block = curr_block;
+                mark_block_pos = curr_block_pos;
+                mark_phase = curr_phase;
+            }
+            return false; // Do not process this block, but do not end processing, continue iteration over blocks.
+        }
+        // Apply callback handlers to OSM entities present in this primitive group.
+        // fprintf(stderr, "pgroup with %d nodes, %d dense nodes, %d ways, %d relations\n",  group->n_nodes,
+        //     group->dense ? group->dense->n_id : 0, group->n_ways, group->n_relations);
+        if (callbacks.way) {
+            for (int w = 0; w < group->n_ways; ++w) {
+                OSMPBF__Way *way = group->ways[w];
+                (*(callbacks.way))(way, string_table);
+            }
+        }
+        if (callbacks.node) {
             for (int n = 0; n < group->n_nodes; ++n) {
                 OSMPBF__Node *node = group->nodes[n];
                 node->lat = lat_offset + (node->lat * granularity);
                 node->lon = lon_offset + (node->lon * granularity);
-                (*(callbacks->node))(node, string_table);
+                (*(callbacks.node))(node, string_table);
             }
             if (group->dense) {
                 OSMPBF__DenseNodes *dense = group->dense;
@@ -198,112 +270,132 @@ static bool handle_primitive_block(OSMPBF__PrimitiveBlock *block, PbfReadCallbac
                                 kv1++;
                             } else {
                                 kv0 += 2; // skip both key and value
-                                fprintf (stderr, "skipping tags after number %d.\n", MAX_TAGS);
+                                fprintf (stderr, "Skipping tags after number %d.\n", MAX_TAGS);
                             }
                         }
                     }
                     node.n_keys = kv1;
                     node.n_vals = kv1;
                     kv0++; // skip zero length string indicating end of k-v pairs for this node
-                    (*(callbacks->node))(&node, string_table);
+                    (*(callbacks.node))(&node, string_table);
                 }
             }
         }
-        if (callbacks->relation) {
+        if (callbacks.relation) {
             for (int r = 0; r < group->n_relations; ++r) {
                 OSMPBF__Relation *relation = group->relations[r];
-                (*(callbacks->relation))(relation, string_table);
+                (*(callbacks.relation))(relation, string_table);
             }
         }
     }
     return false; // signal not to break iteration, loading should continue
 }
 
-// TODO break out open, read, and close into separate functions
-// TODO store PBF file offsets to each entity type when they are found, allowing repeated calls
-// TODO pbf_read_nodes, pbf_read_ways, pbf_read_relations convenience functions
-
-/* Externally visible function. */
-void pbf_read (const char *filename, PbfReadCallbacks *callbacks) {
-    pbf_map(filename);
-    slab_init();
-    OSMPBF__HeaderBlock *header = NULL;
-    int blobcount = 0;
-    phase = PHASE_NODE;
-    bool break_iteration = false;
-    for (void *buf = map; buf < map + map_size; ++blobcount) {
-        if (blobcount % 1000 == 0) {
-            fprintf(stderr, "Loading PBF blob %dk (position %ldMB)\n", blobcount/1000, (buf - map) / 1024 / 1024);
+// Once we've already unpacked a blob message, we may need to zlib-expand its contents before further processing.
+// Return true when we are done reading because no more callbacks apply to the rest of the file.
+static bool process_pbf_blob (OSMPBF__BlobHeader *blobh, OSMPBF__Blob *blob) {
+    // If in fast-forward mode, mostly skip decompression and decoding.
+    // We now know the starting position of the next block so only need to read it if callbacks apply.
+    // TODO handle case where fast-forward totally overshoots all blocks of the next element type or hits EOF.
+    if (fast_forward && curr_block % 1000 != 0) {
+        return false;
+    }
+    uint8_t* bdata;
+    size_t bsize;
+    /* Check if the blob is raw or compressed. */
+    // Unfortunately the information about which OSM element types are present in a blob of type OSMData
+    // is hidden inside the compressed data. To seek forward, rather than decompressing the whole thing
+    // we can probe only the header.
+    if (blob->has_zlib_data) {
+        bdata = zbuf;
+        bsize = blob->raw_size;
+        int inflated_size = zinflate(&(blob->zlib_data), zbuf);
+        if (inflated_size != bsize) {
+            die("Inflated blob size does not match expected size.");
         }
-        /* read blob header */
-        OSMPBF__BlobHeader *blobh;
-        // header prefixed with 4-byte contain network (big-endian) order message length
-        int32_t msg_length = ntohl(*((int*)buf)); // TODO shouldn't this be an exact-width type cast?
-        buf += sizeof(int32_t);
-        blobh = osmpbf__blob_header__unpack(&slabAllocator, msg_length, buf);
-        buf += msg_length;
-        if (blobh == NULL)
-            die("error unpacking blob header");
-
-        /* read blob data */
-        OSMPBF__Blob *blob;
-        blob = osmpbf__blob__unpack(&slabAllocator, blobh->datasize, buf);
-        buf += blobh->datasize;
-        if (blobh == NULL)
-            die("error unpacking blob data");
-
-        /* check if the blob is raw or compressed */
-        uint8_t* bdata;
-        size_t bsize;
-        if (blob->has_zlib_data) {
-            bdata = zbuf;
-            bsize = blob->raw_size;
-            int inflated_size = zinflate(&(blob->zlib_data), zbuf);
-            if (inflated_size != bsize)
-                die("inflated blob size does not match expected size");
-        } else if (blob->has_raw) {
-            fprintf(stderr, "uncompressed\n");
-            bdata = blob->raw.data;
-            bsize = blob->raw.len;
-        } else
-            die("neither compressed nor raw data present in blob");
-
-        /* get header block from first blob */
+    } else if (blob->has_raw) {
+        fprintf(stderr, "Uncompressed blob, this is unusual.\n");
+        bdata = blob->raw.data;
+        bsize = blob->raw.len;
+    } else {
+        die("Neither compressed nor raw data was present in this blob.");
+    }
+    bool done_reading = false;
+    if (curr_block == 0) {
+        /* Get header block from first blob. */
+        if (strcmp(blobh->type, "OSMHeader") != 0) {
+            die("Expected the first blob to contain a header, but it did not.");
+        }
+        // Note that the header block is allocated from the slab, so it will not survive across iterations.
+        // We can't use it after this point, just validate it and trash it.
+        // If we need to save it we can switch allocator to default malloc with NULL.
+        OSMPBF__HeaderBlock *header = osmpbf__header_block__unpack(&slabAllocator, bsize, bdata);
         if (header == NULL) {
-            if (strcmp(blobh->type, "OSMHeader") != 0)
-                die("expected first blob to be a header");
-						// Header block NOT allocated in slab, as we want it to survive accross iterations.
-            header = osmpbf__header_block__unpack(NULL, bsize, bdata);
-            if (header == NULL)
-                die("failed to read OSM header message from header blob");
-            goto free_blob;
+            die("Failed to read OSM header message from header blob.");
         }
-
-        /* get an OSM primitive block from subsequent blobs */
+        // TODO enforce PBF features and granularity found in header
+        osmpbf__header_block__free_unpacked(header, &slabAllocator);
+    } else {
+        /* Get an OSM primitive block from all subsequent blobs. */
         if (strcmp(blobh->type, "OSMData") != 0) {
-            fprintf(stderr, "skipping unrecognized blob type\n");
-            goto free_blob;
+            die("Unrecognized blob type.");
         }
-        
-        OSMPBF__PrimitiveBlock *block;
-        block = osmpbf__primitive_block__unpack(&slabAllocator, bsize, bdata);
-        if (block == NULL)
-            die("error unpacking primitive block");
-        break_iteration = handle_primitive_block(block, callbacks);
+        OSMPBF__PrimitiveBlock *block = osmpbf__primitive_block__unpack(&slabAllocator, bsize, bdata);
+        if (block == NULL) {
+            die("Error unpacking primitive block.");
+        }
+        // Note: Good place to return the primitive block from this function for reuse without nesting function calls.
+        done_reading = handle_primitive_block(block);
         osmpbf__primitive_block__free_unpacked(block, &slabAllocator);
+    }
+    return done_reading;
+}
 
-        /* post-iteration cleanup */
-        free_blob:
+// TODO check true upper limit of slab size. A whole primitive block with many nodes is unpacked into this slab.
+#define SLAB_SIZE (8 * 1024 * 1024)
+
+// Only use fast-forward behavior on files larger than this.
+#define FFWD_MIN_BYTES (100 * 1024 * 1024)
+
+/* Externally visible function to read PBF with arbitrary entity handler functions. */
+void pbf_read (const char *filename, PbfReadCallbacks pbfReadCallbacks) {
+    callbacks = pbfReadCallbacks;
+    pbf_map(filename);
+    slab_init(SLAB_SIZE);
+    // Start reading at the beginning of the mapped file.
+    for (curr_pos = map, curr_block = 0; curr_pos < (map + map_size); curr_block++) {
+        if (curr_block % 1000 == 0) {
+            fprintf(stderr, "Loading PBF blob %dk (position %ldMB)\n", curr_block/1000, (curr_pos - map)/1024/1024);
+        }
+        // Retain start position of current block for use in other functions (marking fast-forward start position).
+        curr_block_pos = curr_pos;
+        /* Read blob header, prefixed with 4 bytes containing its message length in network (big-endian) order. */
+        uint32_t msg_length = ntohl(*((uint32_t *)curr_pos));
+        curr_pos += sizeof(uint32_t);
+        OSMPBF__BlobHeader *blobh = osmpbf__blob_header__unpack(&slabAllocator, msg_length, curr_pos);
+        curr_pos += msg_length;
+        if (blobh == NULL) {
+            die("Error unpacking blob header.");
+        }
+        /* Read blob data itself, without decompressing. */
+        OSMPBF__Blob *blob = osmpbf__blob__unpack(&slabAllocator, blobh->datasize, curr_pos);
+        if (blobh == NULL) {
+            die("Error unpacking blob data.");
+        }
+        curr_pos += blobh->datasize;
+        bool done_reading = process_pbf_blob(blobh, blob);
+        /* Deallocate block and its header, and reset slab allocator for the next iteration. */
+        // With the slab allocator these are probably not necessary, but calling them in case it uses malloc anywhere.
         osmpbf__blob_header__free_unpacked(blobh, &slabAllocator);
         osmpbf__blob__free_unpacked(blob, &slabAllocator);
         slab_reset();
-        if (break_iteration) break;
+        if (done_reading) break;
     }
-		// The only thing not allocated by the slab allocator, use default malloc/free.
-    osmpbf__header_block__free_unpacked(header, NULL); 
-    pbf_unmap();
     slab_done();
+    pbf_unmap();
 }
+
+//// EXAMPLE USAGE ////
 
 /* Example way callback that just counts node references. */
 static long noderefs = 0;
@@ -326,8 +418,9 @@ int test_main (int argc, const char * argv[]) {
         .node = &handle_node,
         .relation = NULL
     };
-    pbf_read(filename, &callbacks);
+    pbf_read(filename, callbacks);
     fprintf(stderr, "total node references %ld\n", noderefs);
     fprintf(stderr, "total nodes %ld\n", nodecount);
     return EXIT_SUCCESS;
 }
+
