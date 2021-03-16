@@ -434,8 +434,11 @@ static uint32_t write_tags (uint32_t *keys, uint32_t *vals, int n, ProtobufCBina
 }
 
 /* Count the number of nodes and ways loaded, just for progress reporting. */
+static long nodes_read = 0;
 static long nodes_loaded = 0;
+static long ways_read = 0;
 static long ways_loaded = 0;
+static long rels_read = 0;
 static long rels_loaded = 0;
 
 // LMDB state
@@ -465,6 +468,14 @@ static struct {
 
 /* Node callback handed to the general-purpose PBF loading code. */
 static void handle_node (OSMPBF__Node *node, ProtobufCBinaryData *string_table) {
+    nodes_read++;
+    if (nodes_read % 10000000 == 0) {
+        fprintf(stderr, "Read %ldM nodes (loaded %ld%%).\n", nodes_read/1000000, (100 * nodes_loaded)/nodes_read);
+    }
+    if (!IDTracker_get(node->id)) {
+        // TODO also check for nodes not in any way and/or possessing certain tags
+        return;
+    }
     // lat and lon are in nanodegrees
     double lat = node->lat * 0.000000001;
     double lon = node->lon * 0.000000001;
@@ -479,22 +490,38 @@ static void handle_node (OSMPBF__Node *node, ProtobufCBinaryData *string_table) 
     // printf("key: %llu \n", node->id);
     // TODO check result code, ensure ascending IDs before using MDB_APPEND
     err_trap(NULL, mdb_put(txn, dbi_nodes, &key, &data, MDB_APPEND));
-
     nodes_loaded++;
-    if (nodes_loaded % 1000000 == 0) {
-        fprintf(stderr, "Loaded %ldM nodes.\n", nodes_loaded / 1000000);
-    }
     //printf ("---\nlon=%.5f lat=%.5f\nx=%d y=%d\n", lon, lat, nodes[node->id].x, nodes[node->id].y);
 }
 
 // Buffer bytes representing one way out to database.
 static uint8_t tempWay[NODE_BUF_LEN];
 
+static bool accept_way (OSMPBF__Way *way, ProtobufCBinaryData *string_table) {
+    size_t n_tags = way->n_keys;
+    for (int t = 0; t < n_tags; t++) {
+        ProtobufCBinaryData key = string_table[way->keys[t]];
+        ProtobufCBinaryData val = string_table[way->vals[t]];
+        if (memcmp("highway", key.data, key.len) == 0 ||
+            memcmp("platform", val.data, val.len) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /*
   Way callback handed to the general-purpose PBF loading code.
   All nodes must come before any ways in the input for this to work.
 */
 static void handle_way (OSMPBF__Way *way, ProtobufCBinaryData *string_table) {
+    ways_read++;
+    if (ways_read % 1000000 == 0) {
+        fprintf(stderr, "Read %ldM ways (loaded %ld%%).\n", ways_read/1000000, (100 * ways_loaded)/ways_read);
+    }
+    if (!accept_way(way, string_table)) {
+        return;
+    }
     // Pointer to next output byte in the output buffer.
     uint8_t *b = tempWay;
     // Check n_refs is sane (>1)
@@ -505,10 +532,14 @@ static void handle_way (OSMPBF__Way *way, ProtobufCBinaryData *string_table) {
     // First store the number of nodes that will follow.
     b += uint64_pack (way->n_refs, b);
     // Then copy over delta coded varint node refs.
+    int64_t node_ref = 0;
     for (int r = 0; r < way->n_refs; r++, n_node_refs++) {
-        // node refs are delta coded and we're going to keep them that way. 
-        // note we could just copy the raw packed PBF data.
+        // Node refs are delta coded and we're going to keep them that way in the DB.
+        // Note we could just copy the raw packed PBF data.
         b += sint64_pack (way->refs[r], b);
+        // But un-delta-code for tracking which nodes to load in bitset.
+        node_ref += way->refs[r];
+        IDTracker_set (node_ref);
     }
     b += write_tags(way->keys, way->vals, way->n_keys, string_table, b, NODE_BUF_LEN);
 
@@ -522,11 +553,7 @@ static void handle_way (OSMPBF__Way *way, ProtobufCBinaryData *string_table) {
     // TODO check result code, check ascending IDs before using MDB_APPEND
     err_trap(NULL, mdb_put(txn, dbi_ways, &key, &data, MDB_APPEND));
     ////
-    
     ways_loaded++;
-    if (ways_loaded % 1000000 == 0) {
-        fprintf(stderr, "Loaded %ldM ways.\n", ways_loaded / 1000000);
-    }
 }
 
 #define MAX_REL_MEMBERS 100000000
@@ -812,14 +839,7 @@ int main (int argc, const char * argv[]) {
 
         /* LOAD INTO DATABASE */
         const char *filename = argv[2];
-        PbfReadCallbacks callbacks = {
-            //.node = &handle_node,
-            .node = NULL,
-            .way  = &handle_way,
-            // .relation = &handle_relation
-            // .way  = NULL,
-            .relation = NULL
-        };
+
         /* Request an exclusive write lock, blocking while reads complete. */
         fprintf(stderr, "Acquiring exclusive write lock on database.\n");
         flock(lock_fd, LOCK_EX);
@@ -835,9 +855,23 @@ int main (int argc, const char * argv[]) {
         err_trap("Dbi open rels ", mdb_dbi_open(txn, "relations", MDB_INTEGERKEY | MDB_CREATE, &dbi_relations));
         //////////
 
-        // Callbacks could also be static variables, why not.
+        IDTracker_reset (); // TODO use a more efficient / less dense bitset
+        PbfReadCallbacks callbacks = {
+                //.node = &handle_node,
+                .node = NULL,
+                .way  = &handle_way,
+                // .relation = &handle_relation
+                // .way  = NULL,
+                .relation = NULL
+        };
         pbf_read (filename, callbacks);
-        
+        PbfReadCallbacks callbacks2 = {
+                .node = &handle_node,
+                .way  = NULL,
+                .relation = NULL
+        };
+        pbf_read (filename, callbacks2);
+
         ////////// LMDB
         // Should we commit more often? Any downside to one huge commit? Can we disable transactions?
         fprintf(stderr, "Committing transaction...\n");
@@ -849,7 +883,9 @@ int main (int argc, const char * argv[]) {
         // fillFactor();
         /* Release exclusive write lock, allowing reads to begin. */
         flock(lock_fd, LOCK_UN);
-        fprintf(stderr, "loaded %ld nodes, %ld ways, and %ld relations total.\n", 
+        fprintf(stderr, "Read %ld nodes, %ld ways, and %ld relations total.\n",
+                nodes_read, ways_read, rels_read);
+        fprintf(stderr, "Loaded %ld nodes, %ld ways, and %ld relations total.\n",
                 nodes_loaded, ways_loaded, rels_loaded);
         return EXIT_SUCCESS;
         

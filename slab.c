@@ -35,6 +35,7 @@ void slab_reset () {
 // Clean up by freeing the slab itself.
 void slab_done () {
     free(slab);
+    slab = next = NULL;
 }
 
 //////// Functions not visible outside this compilation unit. ////////

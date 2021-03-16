@@ -364,9 +364,9 @@ void pbf_read (const char *filename, PbfReadCallbacks pbfReadCallbacks) {
     pbf_map(filename);
     slab_init(SLAB_SIZE);
     // Start reading at the beginning of the mapped file.
-    for (curr_pos = map, curr_block = 0; curr_pos < (map + map_size); curr_block++) {
+    for (curr_pos = map, curr_block = 0, curr_phase = -1; curr_pos < (map + map_size); curr_block++) {
         if (curr_block % 1000 == 0) {
-            fprintf(stderr, "Loading PBF blob %dk (position %ldMB)\n", curr_block/1000, (curr_pos - map)/1024/1024);
+            fprintf(stderr, "Reading PBF blob %dk (position %ldMB)\n", curr_block/1000, (curr_pos - map)/1024/1024);
         }
         // Retain start position of current block for use in other functions (marking fast-forward start position).
         curr_block_pos = curr_pos;
