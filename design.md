@@ -30,7 +30,7 @@ Testing supports this theory. Simply decoding the block header and the block to 
 
 However, although we're identifying the start positions of blocks, we will have no idea when we've reached the blocks containing the entity type we are interested in. It might be possible to decompress and decode only the initial section of each block to probe for its entity type. The block header and structures pointing to the OSM entities should be of fixed width. However, a variable-length string table comes before the groups of element themselves, so the number of bytes to decompress before reaching OSM entities is unknown. Probing in this way then involves decompressing an unknown amount of data before calling protobuf decoding functions that are expected to fail due to partial decoding of truncated buffers. This seems complex and error prone, and is further confounded by the fact that a block can contain more than one "primitive group" so could in theory contain a group of nodes followed by a group of ways (though in practice files usually contain one group per block), requiring decompressing and decoding a piece of much larger but still unknown size.
 
-It seems that probing every blocks is not an option. As an alternative, we can decompress and decode entire blocks, but exploit the fact that blocks with the same type of entities are contiguous and use a decimation approach, 
+It seems that probing every block is not an option. As an alternative, we can decompress and decode entire blocks, but exploit the fact that blocks with the same type of entities are contiguous and use a decimation approach, 
 
 Broadly there are two options here: pre-indexing the location of all the blocks and then performing a search that uses random access (such as a binary search) or iterating linearly over the blocks but skipping large numbers of blocks until we detect a change.
 
@@ -41,6 +41,17 @@ Consider though that there are only three sections to the file (nodes, ways, and
 ### Slab Allocation
 
 ## OSM ID tracking
+
+## Performance
+
+As of 05f7a85a8de6508ce7e3c0d204cce56a54b30ee7 loading all highway and platform ways and associated nodes for all of Norway takes about 20 seconds. Process sampling with macOS activity monitor indicates a time breakdown of roughly:
+- 43% handle_node, of which
+    - 25% mdb_put
+    - 14% roaring_bitmap_contains
+- 32% protobuf_c_message_unpack
+- 20% inflate
+
+This suggests a fairly simple division of labor into two halves for multi-threading: the thread performing the decompression should also parse the messages in the decompressed data. This could actually be the main thread performing primitive block decompression/decoding, then passing the resulting PBF messages off to the secondary thread for writing to the database, locking the buffer of deflated memory (and associated allocator) until the next block is ready. This would need to be double buffered, and each decoding buffer could even include its own stack or statically allocated slab: struct {uint8_t slab[8MB]), uint8_t deflated[32MB]}). In practice about 3 MiB of the slab is observed to be used when it's reset.
 
 ## Other comments moved out of code
 
