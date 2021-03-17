@@ -1,13 +1,15 @@
 vanilla-extract
 ===============
 
-Clone OSM planet and perform bounding-box extracts for bulk data users. Consumes PBF format, and produces both PBF and the experimental VEX format for binary OSM data exchange.
+Clone OSM planet or large extracts, filtering during load, and perform bounding-box extracts for bulk data users. Consumes PBF format, and produces both PBF and the experimental VEX format for binary OSM data exchange.
 
 Please note that this is an **experimental prototype mostly dating from 2014** for testing high efficiency data storage ideas tailored to very specific use cases. It rarely range checks its input data or asserts invariants about its own state, and is not necessarily stable. It does some rather extreme things, such as mapping files big enough to hold every OSM node in the world directly into memory. The efficiency and feasibility of these approaches depend strongly on details of the operating system and filesystem in use.
 
 It also contains quite a lot of hard-coded constants that must be hand-tuned to fit the data set being loaded (maximum entity IDs, common tag values etc.) This means configuration or indeed any use of this software involves editing and recompiling C source code. If this sounds crazy to you, you probably don't want to use it.
 
 ## Compiling
+
+### Precompiled dependencies
 
 You will need zlib and protobuf-c libraries. On Ubuntu you can install them from packages:
 
@@ -25,6 +27,8 @@ On MacOS using Homebrew, you can install the necessary libraries with:
 
 `brew install protobuf-c zlib`
 
+### Generated sources
+
 Before compiling, you need to generate some source code from Protobuf specifications: 
 
 ```
@@ -32,9 +36,31 @@ protoc-c fileformat.proto --c_out=.
 protoc-c osmformat.proto --c_out=.
 ```
 
-Then just make as usual:
+### Submodule Dependencies
+
+We are now using the libraries LMDB (key-value store) and CRoaring (compressed bitmaps). These are included as git submodules and statically linked into Vanilla Extract. On recent versions of git, cloning this repo should also clone the submodules. However they are not yet recursively built by our Makefile. They must be built manually before building this project. Below are some examples of how they may be built. See the individual projects for detailed build instructions.
+
+#### CRoaring
+```shell
+cd CRoaring
+ll
+mkdir build
+cd build
+cmake .. -DROARING_BUILD_STATIC=ON
+make && make test
+```
+
+#### LMDB
+```shell
+cd lmdb/libraries/liblmdb/
+make
+```
+
+### Compilation
+Once everything is in place, in the root of this repository you can run:
 
 `make clean && make`
+
 
 ## Usage
 
