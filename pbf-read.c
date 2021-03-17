@@ -68,7 +68,10 @@ static void pbf_map(const char *filename) {
 /* Release the memory map of the input file when finished reading it. */
 static void pbf_unmap() {
     // TODO check success like when mapping
-    munmap(map, map_size);
+    if (munmap(map, map_size)) {
+        die("Failed to unmap input file.");
+    }
+    map = NULL;
 }
 
 // OSMPBF spec says: "The uncompressed length of a Blob *should* be less than 16 MiB and *must* be less than 32 MiB."
@@ -164,6 +167,7 @@ static bool enforce_ordering (OSMPBF__PrimitiveGroup *group) {
     // Move into a new phase if we detected an element type that should come after the current phase.
     if (element_type > curr_phase) {
         curr_phase = element_type;
+        fprintf(stderr, "Entered phase %d\n", curr_phase);
         return true;
     } else {
         return false;
@@ -177,7 +181,23 @@ static bool enforce_ordering (OSMPBF__PrimitiveGroup *group) {
 static bool fast_forward;
 static bool slow_seek;
 
+/* Rewind to last known block of previous type and process at normal speed. */
+static void pbf_rewind () {
+    if (fast_forward) {
+        fprintf(stderr, "Rewinding to block number %dk.\n", mark_block/1000);
+        fast_forward = false;
+        slow_seek = true;
+        curr_block = mark_block;
+        curr_pos = curr_block_pos = mark_block_pos;
+        curr_phase = mark_phase;
+    } else {
+        // Valid rewind markers are set when we enter fast forward mode, avoid infinite loops or dangling pointers.
+        die("Rewind occurred when not in fast forward mode.");
+    }
+}
+
 /* Tags are stored in a string table at the PrimitiveBlock level. */
+// TODO multiple return codes for CONTINUE, REWIND, DONE?
 #define MAX_TAGS 256
 static bool handle_primitive_block (OSMPBF__PrimitiveBlock *block) {
     ProtobufCBinaryData *string_table = block->stringtable->s;
@@ -194,13 +214,7 @@ static bool handle_primitive_block (OSMPBF__PrimitiveBlock *block) {
         if (enforce_ordering (group)) {
             // Transition has occurred from one element type to another.
             if (fast_forward) {
-                // Rewind to last known block of previous type and process at normal speed.
-                fprintf(stderr, "Rewinding to block number %dk.\n", mark_block/1000);
-                fast_forward = false;
-                slow_seek = true;
-                curr_block = mark_block;
-                curr_pos = mark_block_pos;
-                curr_phase = mark_phase;
+                pbf_rewind();
                 return false; // Do not end processing, continue iteration over blocks.
             }
             if (no_more_callbacks()) {
@@ -294,10 +308,9 @@ static bool handle_primitive_block (OSMPBF__PrimitiveBlock *block) {
 
 // Once we've already unpacked a blob message, we may need to zlib-expand its contents before further processing.
 // Return true when we are done reading because no more callbacks apply to the rest of the file.
+// We now know the starting position of the next block, so only need to decode this block when callbacks apply.
+// If in fast-forward mode, skip decompression and decoding of most blocks.
 static bool process_pbf_blob (OSMPBF__BlobHeader *blobh, OSMPBF__Blob *blob) {
-    // If in fast-forward mode, mostly skip decompression and decoding.
-    // We now know the starting position of the next block so only need to read it if callbacks apply.
-    // TODO handle case where fast-forward totally overshoots all blocks of the next element type or hits EOF.
     if (fast_forward && curr_block % 1000 != 0) {
         return false;
     }
@@ -363,8 +376,16 @@ void pbf_read (const char *filename, PbfReadCallbacks pbfReadCallbacks) {
     callbacks = pbfReadCallbacks;
     pbf_map(filename);
     slab_init(SLAB_SIZE);
-    // Start reading at the beginning of the mapped file.
-    for (curr_pos = map, curr_block = 0, curr_phase = -1; curr_pos < (map + map_size); curr_block++) {
+    // Initialize iteration over file blocks starting at the beginning of the mapped file.
+    {
+        curr_pos = map;
+        curr_block = mark_block = 0;
+        curr_phase = -1;
+        curr_block_pos = mark_block_pos = NULL;
+        fast_forward = false;
+        slow_seek = false;
+    }
+    for (;;) {
         if (curr_block % 1000 == 0) {
             fprintf(stderr, "Reading PBF blob %dk (position %ldMB)\n", curr_block/1000, (curr_pos - map)/1024/1024);
         }
@@ -390,7 +411,16 @@ void pbf_read (const char *filename, PbfReadCallbacks pbfReadCallbacks) {
         osmpbf__blob_header__free_unpacked(blobh, &slabAllocator);
         osmpbf__blob__free_unpacked(blob, &slabAllocator);
         slab_reset();
+        curr_block++;
         if (done_reading) break;
+        if (curr_pos >= (map + map_size)) {
+            fprintf(stderr, "Reached end of input PBF file.\n");
+            if (fast_forward) {
+                // We skipped completely over the section of the input file where callbacks apply, so rewind.
+                // Note it's important to do this _after_ the block number increment, so it's overwritten.
+                pbf_rewind();
+            } else break;
+        }
     }
     slab_done();
     pbf_unmap();

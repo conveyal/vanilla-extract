@@ -855,7 +855,7 @@ int main (int argc, const char * argv[]) {
         err_trap("Dbi open rels ", mdb_dbi_open(txn, "relations", MDB_INTEGERKEY | MDB_CREATE, &dbi_relations));
         //////////
 
-        IDTracker_reset (); // TODO use a more efficient / less dense bitset
+        IDTracker_init();
         PbfReadCallbacks callbacks = {
                 //.node = &handle_node,
                 .node = NULL,
@@ -878,7 +878,8 @@ int main (int argc, const char * argv[]) {
         err_trap("Txn commit", mdb_txn_commit(txn));
         mdb_env_close(env);
         //////////
-        
+        IDTracker_free();
+
         // Disable grid summary since grid is not mapped/allocated
         // fillFactor();
         /* Release exclusive write lock, allowing reads to begin. */
@@ -938,7 +939,7 @@ int main (int argc, const char * argv[]) {
         }
 
         /* Initialize the ID tracker so we can avoid outputting nodes more than once. */
-        IDTracker_reset (); // TODO also track ways so we can store ways in more than one tile
+        IDTracker_init(); // TODO also track ways so we can store ways in more than one tile
         
         /* Make three passes, first outputting all nodes, then all ways, then all relations. */
         for (int stage = NODE; stage <= RELATION; stage++) {
@@ -992,7 +993,8 @@ int main (int argc, const char * argv[]) {
                                     }
                                     // print_node (node_id); // DEBUG
                                     /* Mark this node, and skip outputting it if already seen. */
-                                    if (IDTracker_set (node_id)) continue;
+                                    // FIXME implement set-and-get with roaring_bitmap_add_checked
+                                    // if (IDTracker_set (node_id)) continue;
                                     if (vexformat) {
                                         vexbin_write_node (node_id);
                                     } else {
@@ -1010,6 +1012,7 @@ int main (int argc, const char * argv[]) {
             /* Write out any buffered nodes or ways before beginning the next PBF writing stage. */
             if (!vexformat) pbf_write_flush();
         }
+        IDTracker_free();
         fclose(output_file);
         /* Release the shared lock, allowing writes to begin. */
         flock(lock_fd, LOCK_UN); 
