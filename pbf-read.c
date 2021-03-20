@@ -14,6 +14,7 @@
 #include <stdbool.h>
 #include "zlib.h"
 #include "slab.h"
+#include "util.h"
 
 // sudo apt-get install protobuf-c-compiler libprotobuf-c0-dev zlib1g-dev
 // then compile the protobuf with:
@@ -22,17 +23,6 @@
 
 // The osmpbf-dev debian package (https://github.com/scrosby/OSM-binary) is for C++ but provides
 // the protobuf definition files.
-
-// TODO make reusable in other modules (create util module) along with human() function.
-static void die(const char *msg) {
-    fprintf(stderr, "%s\n", msg);
-    exit(EXIT_FAILURE);
-}
-
-/* Sequential states used to enforce ordering of elements in a PBF and bail out early if possible. */
-#define PHASE_NODE 0
-#define PHASE_WAY 1
-#define PHASE_RELATION 2
 
 /* Private PBF reading state variables. */
 static uint32_t curr_block;   // Current block number being read in input PBF
@@ -115,15 +105,15 @@ static int detect_element_type (OSMPBF__PrimitiveGroup *group) {
     int element_type = -1;
     if (group->dense || group->n_nodes > 0) {
         n_element_types += 1;
-        element_type = PHASE_NODE;
+        element_type = NODE;
     }
     if (group->n_ways > 0) {
         n_element_types += 1;
-        element_type = PHASE_WAY;
+        element_type = WAY;
     }
     if (group->n_relations > 0) {
         n_element_types += 1;
-        element_type = PHASE_RELATION;
+        element_type = RELATION;
     }
     if (n_element_types != 1) {
         die("Each primitive group should contain exactly one element type (nodes, ways, or relations).");
@@ -135,22 +125,22 @@ static int detect_element_type (OSMPBF__PrimitiveGroup *group) {
 static PbfReadCallbacks callbacks;
 
 static bool no_callback_for_phase () {
-    return (curr_phase == PHASE_NODE && !(callbacks.node))
-           || (curr_phase == PHASE_WAY && !(callbacks.way))
-           || (curr_phase == PHASE_RELATION && !(callbacks.relation));
+    return (curr_phase == NODE && !(callbacks.node))
+           || (curr_phase == WAY && !(callbacks.way))
+           || (curr_phase == RELATION && !(callbacks.relation));
 }
 
 static bool no_more_callbacks () {
-    if (curr_phase == PHASE_NODE &&
+    if (curr_phase == NODE &&
         callbacks.node == NULL && callbacks.way == NULL && callbacks.relation == NULL) {
         fprintf (stderr, "Skipping the rest of the PBF file, no callbacks were defined.\n");
         return true;
     }
-    if (curr_phase == PHASE_WAY && callbacks.way == NULL && callbacks.relation == NULL) {
+    if (curr_phase == WAY && callbacks.way == NULL && callbacks.relation == NULL) {
         fprintf (stderr, "Skipping the rest of the PBF file, only a way callback was defined.\n");
         return true;
     }
-    if (curr_phase == PHASE_RELATION && callbacks.relation == NULL) {
+    if (curr_phase == RELATION && callbacks.relation == NULL) {
         fprintf (stderr, "Skipping the rest of the PBF file, no relation callback is defined.\n");
         return true;
     }

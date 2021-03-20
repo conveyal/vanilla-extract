@@ -1,9 +1,10 @@
 #ifndef PBF_H_INCLUDED
 #define PBF_H_INCLUDED
 
+#include <stdio.h> // for FILE
 #include "fileformat.pb-c.h"
 #include "osmformat.pb-c.h"
-#include <stdio.h> // for FILE
+#include "vex.h"
 
 /* This bundles together callback functions for reading the three main OSM element types. */
 typedef struct {
