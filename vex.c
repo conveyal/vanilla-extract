@@ -170,12 +170,13 @@ static long nodes_read = 0;
 static long nodes_loaded = 0;
 static long ways_read = 0;
 static long ways_loaded = 0;
+static long ways_indexed = 0;
 static long rels_read = 0;
 static long rels_loaded = 0;
 
 // LMDB state
 static MDB_env *env;
-static MDB_dbi dbi_nodes, dbi_ways, dbi_relations;
+static MDB_dbi dbi_nodes, dbi_ways, dbi_relations, dbi_index;
 static MDB_val key, data;
 static MDB_txn *txn;
 // static MDB_cursor *cursor;
@@ -275,8 +276,6 @@ static void handle_way (OSMPBF__Way *way, ProtobufCBinaryData *string_table) {
     }
     b += write_tags(way->keys, way->vals, way->n_keys, string_table, b, NODE_BUF_LEN);
 
-    // TODO Handle spatial indexing, possibly still using grid or with duplicate keys in LMDB.
-
     //// LMDB
     key.mv_size = sizeof(uint64_t);
     key.mv_data = &(way->id);
@@ -287,8 +286,6 @@ static void handle_way (OSMPBF__Way *way, ProtobufCBinaryData *string_table) {
     ////
     ways_loaded++;
 }
-
-#define MAX_REL_MEMBERS 100000000
 
 /*
   Relation callback handed to the general-purpose PBF loading code.
@@ -557,8 +554,39 @@ int main (int argc, const char * argv[]) {
         // Should we commit more often? Any downside to one huge commit? Can we disable transactions?
         fprintf(stderr, "Committing transaction...\n");
         err_trap("Txn commit", mdb_txn_commit(txn));
-        mdb_env_close(env);
+        err_trap("Txn begin     ", mdb_txn_begin(env, NULL, 0, &txn));
+        err_trap("Dbi open index", mdb_dbi_open(txn, "index", MDB_INTEGERKEY | MDB_DUPSORT | MDB_INTEGERDUP | MDB_DUPFIXED | MDB_CREATE, &dbi_index));
         //////////
+
+        // We apparently don't need to commit before reading from our own transaction.
+        {
+            fprintf(stderr, "Indexing ways...\n");
+            MDB_cursor *cursor;
+            MDB_val way_key, way_data;
+            err_trap("Cursor open  ", mdb_cursor_open(txn, dbi_ways, &cursor));
+            for (int result = mdb_cursor_get(cursor, &way_key, &way_data, MDB_FIRST);
+                 result != MDB_NOTFOUND;
+                 result = mdb_cursor_get(cursor, &way_key, &way_data, MDB_NEXT)
+             ) {
+                ways_indexed++;
+                if (ways_indexed % 1000000 == 0) {
+                    fprintf(stderr, "Indexed %ldM ways.\n", ways_indexed/1000000);
+                }
+                uint8_t *b = (uint8_t *)(way_key.mv_data);
+                uint64_t n_nodes;
+                uint64_t first_node;
+                coord_t node_coord = {.x=500, .y=500};
+                // TODO decode node IDs, read way coordinate from DB, bit shift x and y to bin.
+                // b += uint64_unpack();
+                MDB_val idx_key  = {.mv_size = sizeof(coord_t), .mv_data=&node_coord};
+                // Insert way ID as duplicate value using concatenated x and y bin as integer key.
+                // Inserting thousands of the same key without MDB_DUPSORT was causing MDB internal assertions to fail.
+                err_trap(NULL, mdb_put(txn, dbi_index, &idx_key, &way_key, 0));
+            }
+            mdb_cursor_close(cursor);
+            err_trap("Txn commit", mdb_txn_commit(txn));
+            mdb_env_close(env);
+        }
 
         fprintf(stderr, "Read %ld nodes, %ld ways, and %ld relations total.\n",
                 nodes_read, ways_read, rels_read);
