@@ -578,6 +578,7 @@ int main (int argc, const char * argv[]) {
                 coord_t node_coord = {.x=500, .y=500};
                 // TODO decode node IDs, read way coordinate from DB, bit shift x and y to bin.
                 // b += uint64_unpack();
+                _Static_assert(sizeof(coord_t) == sizeof(uint64_t));
                 MDB_val idx_key  = {.mv_size = sizeof(coord_t), .mv_data=&node_coord};
                 // Insert way ID as duplicate value using concatenated x and y bin as integer key.
                 // Inserting thousands of the same key without MDB_DUPSORT was causing MDB internal assertions to fail.
