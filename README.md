@@ -3,9 +3,24 @@ vanilla-extract
 
 Clone OSM planet and perform bounding-box extracts for bulk data users. Consumes PBF format, and produces both PBF and the experimental VEX format for binary OSM data exchange.
 
-Please note that this is an **experimental prototype mostly dating from 2014** for testing high efficiency data storage ideas tailored to very specific use cases. It rarely range checks its input data or asserts invariants about its own state, and is not necessarily stable. It does some rather extreme things, such as mapping files big enough to hold every OSM node in the world directly into memory. The efficiency and feasibility of these approaches depend strongly on details of the operating system and filesystem in use.
+Please note that this is an **experimental prototype mostly dating from 2014** for testing high efficiency data storage ideas tailored to very specific use cases. A more recent and production-ready project with related goals is Brandon Liu's https://github.com/protomaps/OSMExpress.
+
+## LMDB Branch
+
+All recent work on vanilla-extract (since 2021) is in the [lmdb branch](https://github.com/conveyal/vanilla-extract/tree/lmdb). This takes a cue from OSMExpress and uses LMDB as the underlying storage engine, while continuing to focus on filtering OSM elements during loading and extraction as an optimization for systems that only use a small fraction of OSM data, specifically routing engines. It is still primarily a testbed for ideas and performance measurement.
+
+## This Main Branch
+
+This main branch rarely range checks its input data or asserts invariants about its own state, and is not necessarily stable. It does some rather extreme things, such as mapping files big enough to hold every OSM node in the world directly into memory. The efficiency and feasibility of these approaches depend strongly on details of the operating system and filesystem in use.
 
 It also contains quite a lot of hard-coded constants that must be hand-tuned to fit the data set being loaded (maximum entity IDs, common tag values etc.) This means configuration or indeed any use of this software involves editing and recompiling C source code. If this sounds crazy to you, you probably don't want to use it.
+
+## Vex Format
+
+In the `vexbin_*` functions in `vex.c`, this project contains the initial draft concept for a simple bulk binary OSM data exchange format referred to as "vex", described in the following article: https://blog.conveyal.com/simpler-openstreetmap-data-exchange-formats-6d43be5230e8
+
+A much more viable second revision of that format is described at https://blog.conveyal.com/simpler-openstreetmap-data-exchange-part-ii-82afa8bdb01,
+and a draft implementation of that second revision is present in [Conveyal's `osm-lib` library](https://github.com/conveyal/osm-lib/blob/master/src/main/java/com/conveyal/osmlib/VexInput.java), in `VexInput.java` and `VexOutput.java`.
 
 ## Compiling
 
