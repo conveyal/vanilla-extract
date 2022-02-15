@@ -5,15 +5,12 @@ Clone OSM planet or large extracts, filtering during load, and perform bounding-
 
 Please note that this is an **experimental prototype mostly dating from 2014** for testing high efficiency data storage ideas tailored to very specific use cases. A more recent and production-ready project with related goals is Brandon Liu's https://github.com/protomaps/OSMExpress.
 
-## LMDB Branch
+## This LMDB Branch
 
 All recent work on vanilla-extract (since 2021) is in the [lmdb branch](https://github.com/conveyal/vanilla-extract/tree/lmdb). This takes a cue from OSMExpress and uses LMDB as the underlying storage engine, while continuing to focus on filtering OSM elements during loading and extraction as an optimization for systems that only use a small fraction of OSM data, specifically routing engines. It is still primarily a testbed for ideas and performance measurement.
 
-## This Main Branch
+On last measurement, a 57 GiB planet PBF loads into 62GiB lmdb file (filtering to only highway ways during load, with no spatial indexing). This takes 55 minutes on an SSD. Only 26% of nodes are loaded, and about 23% of ways.
 
-This main branch rarely range checks its input data or asserts invariants about its own state, and is not necessarily stable. It does some rather extreme things, such as mapping files big enough to hold every OSM node in the world directly into memory. The efficiency and feasibility of these approaches depend strongly on details of the operating system and filesystem in use.
-
-It also contains quite a lot of hard-coded constants that must be hand-tuned to fit the data set being loaded (maximum entity IDs, common tag values etc.) This means configuration or indeed any use of this software involves editing and recompiling C source code. If this sounds crazy to you, you probably don't want to use it.
 
 ## Vex Format
 
